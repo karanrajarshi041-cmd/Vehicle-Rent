@@ -1,0 +1,30 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Runtime data
+backend/instance/
+instance/
+uploads/
+
+# Frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/test-results/
+frontend/playwright-report/
+frontend/.playwright-cli/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
