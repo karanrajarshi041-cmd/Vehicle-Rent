@@ -253,3 +253,68 @@ def test_due_maintenance_blocks_future_booking_until_completed(app):
     assert traveler.c.get('/api/vehicles/10').get_json()['status']=='Under Maintenance'
     assert admin.request('POST',f"/api/admin/maintenance/{m.id}/complete",{'cost':0}).status_code==200
     assert traveler.request('POST','/api/quote',trip(vehicle=10)).get_json()['available']
+
+
+def test_expanded_demo_fleet_and_car_bike_filters(app):
+    c = Client(app)
+    cars = c.c.get('/api/vehicles?category=cars').get_json()
+    bikes = c.c.get('/api/vehicles?category=bike').get_json()
+    assert len(cars) >= 12 and len(bikes) >= 5
+    assert all(v['category_slug'] != 'bike' for v in cars)
+    assert all(v['category_slug'] == 'bike' for v in bikes)
+    assert {'Toyota Innova Crysta', 'Mahindra Thar LX', 'Maruti Suzuki Swift ZXi'}.issubset({v['name'] for v in cars})
+    assert {'Royal Enfield Himalayan 450', 'KTM 390 Duke', 'Bajaj Pulsar N250', 'Hero Xpulse 200 4V'}.issubset({v['name'] for v in bikes})
+    assert c.c.get('/api/vehicles?category=muv').get_json()[0]['name'] == 'Toyota Innova Crysta'
+
+
+def test_long_trip_search_quote_booking_availability_and_limit(app):
+    from urllib.parse import urlencode
+
+    c = Client(app)
+    c.login()
+    bike = next(v for v in c.c.get('/api/vehicles?category=bike').get_json() if v['model'] == 'Himalayan 450')
+    form = trip(vehicle=bike['id'], days_ahead=50, duration=30)
+    search = {'category': 'bike', 'pickup_at': form['pickup_at'], 'return_at': form['return_at']}
+    assert bike['id'] in {v['id'] for v in c.c.get('/api/vehicles?' + urlencode(search)).get_json()}
+    quote = c.request('POST', '/api/quote', form).get_json()
+    assert quote['available'] and quote['days'] == 30
+    assert quote['rental_amount'] == bike['daily_rate'] * 30
+    booking = create(c, form)
+    assert booking['days'] == 30 and booking['total'] == quote['total']
+    assert bike['id'] not in {v['id'] for v in c.c.get('/api/vehicles?' + urlencode(search)).get_json()}
+    assert not c.request('POST', '/api/quote', form).get_json()['available']
+
+    # All three endpoints agree on the maximum, including one second over it.
+    max_trip = trip(vehicle=4, days_ahead=120, duration=90)
+    assert c.request('POST', '/api/quote', max_trip).get_json()['days'] == 90
+    too_long = {**max_trip, 'return_at': (local_now().replace(hour=10, minute=0, second=0, microsecond=0) + timedelta(days=210, seconds=1)).isoformat()}
+    for response in [c.c.get('/api/vehicles?' + urlencode({'pickup_at': too_long['pickup_at'], 'return_at': too_long['return_at']})),
+                     c.request('POST', '/api/quote', too_long), c.request('POST', '/api/bookings', too_long)]:
+        assert response.status_code == 400
+        assert '90 days' in response.get_json()['error']
+
+
+def test_opt_in_demo_fleet_update_is_non_destructive_and_idempotent(app):
+    from backend.models import Vehicle, VehicleCategory
+    from backend.seed import ADDITIONAL_FLEET, add_sample_vehicles
+
+    registrations = [v['registration'] for v in ADDITIONAL_FLEET]
+    with app.extensions['roam_session']() as db:
+        # Simulate an older demo database, including its existing accounts and bookings.
+        for vehicle in db.scalars(select(Vehicle).where(Vehicle.registration.in_(registrations))).all():
+            db.delete(vehicle)
+        db.flush()
+        db.delete(db.scalar(select(VehicleCategory).where(VehicleCategory.slug == 'muv')))
+        db.commit()
+        assert add_sample_vehicles(db) == len(registrations)
+        db.commit()
+        assert db.get(Booking, 1) is not None
+        assert add_sample_vehicles(db) == 0
+        vehicle = db.scalar(select(Vehicle).where(Vehicle.registration == registrations[0]))
+        vehicle.is_deleted = True
+        vehicle.model = 'Customized by admin'
+        vehicle.registration = vehicle.registration.lower()
+        db.commit()
+        assert add_sample_vehicles(db) == 0
+        db.commit()
+        assert vehicle.is_deleted and vehicle.model == 'Customized by admin'
