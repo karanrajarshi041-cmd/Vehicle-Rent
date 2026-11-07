@@ -17,6 +17,78 @@ def amounts(rate, days):
     return rental, service, tax, rental + service + tax
 
 
+# Extra illustrative vehicles. Registration is the stable key so an opt-in
+# update of an existing demo database never overwrites an edited vehicle.
+ADDITIONAL_FLEET = [
+    dict(category='muv', branch='Park Street', city='Kolkata', brand='Toyota', model='Innova Crysta',
+         registration='WB-01-AB-1211', year=2024, fuel_type='Diesel', transmission='Manual', seats=7,
+         daily_rate='3499', image='car-mpv',
+         description='Room for the whole crew and their bags, with plenty of space for a longer getaway.'),
+    dict(category='suv', branch='Salt Lake', city='Kolkata', brand='Mahindra', model='Thar LX',
+         registration='WB-02-CD-1212', year=2024, fuel_type='Diesel', transmission='Manual', seats=4,
+         daily_rate='3299', image='car-offroad',
+         description='A bold, compact SUV for scenic highways and adventures beyond the city.'),
+    dict(category='hatchback', branch='Indiranagar', city='Bengaluru', brand='Maruti Suzuki', model='Swift ZXi',
+         registration='KA-03-EF-1213', year=2024, fuel_type='Petrol', transmission='Manual', seats=5,
+         daily_rate='1599', image='car-hatchback',
+         description='A nimble, easy-going hatchback for city days and weekend plans.'),
+    dict(category='bike', branch='Salt Lake', city='Kolkata', brand='Royal Enfield', model='Himalayan 450',
+         registration='WB-02-CD-1214', year=2024, fuel_type='Petrol', transmission='Manual', seats=2,
+         daily_rate='1499', image='bike-adventure',
+         description='An adventure touring motorcycle ready for open roads and mountain views.'),
+    dict(category='bike', branch='Park Street', city='Kolkata', brand='KTM', model='390 Duke',
+         registration='WB-01-AB-1215', year=2024, fuel_type='Petrol', transmission='Manual', seats=2,
+         daily_rate='1399', image='bike-street',
+         description='A lively street bike for riders who like a little more energy in their journey.'),
+    dict(category='bike', branch='Park Street', city='Kolkata', brand='Bajaj', model='Pulsar N250',
+         registration='WB-01-AB-1216', year=2023, fuel_type='Petrol', transmission='Manual', seats=2,
+         daily_rate='799', image='bike-street',
+         description='A versatile street motorcycle for everyday rides and easy escapes.'),
+    dict(category='bike', branch='Connaught Place', city='New Delhi', brand='Hero', model='Xpulse 200 4V',
+         registration='DL-01-GH-1217', year=2024, fuel_type='Petrol', transmission='Manual', seats=2,
+         daily_rate='1099', image='bike-adventure',
+         description='A light adventure bike for exploring new roads at your own pace.'),
+]
+
+
+def add_sample_vehicles(db):
+    """Add missing demo vehicles without resetting data or changing existing records.
+
+    The caller controls the transaction. Soft-deleted registrations are also
+    left alone so removing a demo vehicle does not bring it back on re-run.
+    """
+    categories = {c.slug: c for c in db.scalars(select(VehicleCategory))}
+    branches = {(b.name, b.city): b for b in db.scalars(select(Branch))}
+    required_branches = {(v['branch'], v['city']) for v in ADDITIONAL_FLEET}
+    required_categories = {v['category'] for v in ADDITIONAL_FLEET} - {'muv'}
+    if not required_branches.issubset(branches) or not required_categories.issubset(categories):
+        raise ValueError('The demo branches and categories are missing. Seed an empty demo database first.')
+    if 'muv' not in categories:
+        if db.scalar(select(VehicleCategory.id).where(VehicleCategory.name == 'MUV')):
+            raise ValueError('An existing MUV category has a different slug; resolve it before adding sample vehicles.')
+        categories['muv'] = VehicleCategory(name='MUV', slug='muv')
+        db.add(categories['muv'])
+        db.flush()
+    # MySQL commonly uses a case-insensitive unique collation for registration.
+    existing = {registration.casefold() for registration in db.scalars(select(Vehicle.registration))}
+    count = 0
+    for item in ADDITIONAL_FLEET:
+        if item['registration'].casefold() in existing:
+            continue
+        db.add(Vehicle(
+            category_id=categories[item['category']].id,
+            branch_id=branches[(item['branch'], item['city'])].id,
+            brand=item['brand'], model=item['model'], registration=item['registration'],
+            year=item['year'], fuel_type=item['fuel_type'], transmission=item['transmission'],
+            seats=item['seats'], daily_rate=Decimal(item['daily_rate']),
+            image_url='/images/' + item['image'] + '.jpg', description=item['description'],
+            featured=True, status='Available', created_at=local_now(),
+        ))
+        count += 1
+    db.flush()
+    return count
+
+
 def seed_data(db):
     if db.scalar(select(User.id).limit(1)):
         return False
@@ -30,7 +102,7 @@ def seed_data(db):
     d = User(name="Ananya Roy", email="ananya@roam.test", password_hash=generate_password_hash("Demo12345!"), role="customer", created_at=now - timedelta(days=70))
     db.add_all([admin,staff,a,b,c,d]); db.flush()
     db.add_all([Customer(user_id=x.id, phone=p, license_number="") for x,p in [(a,"+91 98765 43210"),(b,"+91 98765 43211"),(c,"+91 98765 43212"),(d,"+91 98765 43213")]])
-    cats = {name: VehicleCategory(name=name, slug=slug) for name,slug in [("SUV","suv"),("Sedan","sedan"),("Hatchback","hatchback"),("Electric","electric"),("Bike","bike"),("Luxury","luxury")]}
+    cats = {name: VehicleCategory(name=name, slug=slug) for name,slug in [("SUV","suv"),("Sedan","sedan"),("Hatchback","hatchback"),("Electric","electric"),("Bike","bike"),("Luxury","luxury"),("MUV","muv")]}
     branches = [Branch(name="Park Street", city="Kolkata", address="18 Park Street, Kolkata, West Bengal"), Branch(name="Salt Lake", city="Kolkata", address="Sector V, Salt Lake, Kolkata, West Bengal"), Branch(name="Indiranagar", city="Bengaluru", address="100 Feet Road, Indiranagar, Bengaluru"), Branch(name="Connaught Place", city="New Delhi", address="Connaught Place, New Delhi")]
     db.add_all(list(cats.values()) + branches); db.flush()
     def vehicle(cat, branch, brand, model, reg, year, fuel, transmission, seats, rate, image, featured=False, status="Available", desc=""):
@@ -46,6 +118,7 @@ def seed_data(db):
     v8=vehicle("Sedan",3,"Hyundai","Verna SX","DL-01-GH-1208",2024,"Petrol","Manual",5,1899,"car-sedan")
     v9=vehicle("Luxury",0,"BMW","3 Series","WB-01-AB-1209",2023,"Petrol","Automatic",5,5999,"car-luxury",False,"Under Maintenance")
     v10=vehicle("Electric",3,"MG","ZS EV","DL-01-GH-1210",2024,"Electric","Automatic",5,2999,"car-electric")
+    add_sample_vehicles(db)
     def booking(user, v, start, end, status, payment_status="Paid", method="UPI"):
         days=(end-start).days
         rental, service, tax, total=amounts(v.daily_rate,days)
@@ -75,12 +148,26 @@ def seed_data(db):
 
 
 if __name__ == "__main__":
-    import sys
+    import argparse
+    parser = argparse.ArgumentParser(description='Create or extend the illustrative Roam demo dataset.')
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--reset', action='store_true', help='Delete ALL records and recreate the demo dataset')
+    group.add_argument('--add-fleet', action='store_true', help='Add missing sample vehicles to an existing demo database')
+    args = parser.parse_args()
     load_dotenv()
     url=os.environ.get("DATABASE_URL",default_database_url())
     engine, Session=create_database(url)
-    if "--reset" in sys.argv:
+    if args.reset:
         print("Resetting ALL tables and demo records.")
         Base.metadata.drop_all(engine); Base.metadata.create_all(engine)
     with Session() as db:
-        print("Demo records created." if seed_data(db) else "Database already contains users; seed skipped.")
+        if args.add_fleet:
+            try:
+                count = add_sample_vehicles(db)
+                db.commit()
+                print(f"Added {count} sample vehicle(s). Existing records were left unchanged.")
+            except ValueError as error:
+                db.rollback()
+                raise SystemExit(str(error))
+        else:
+            print("Demo records created." if seed_data(db) else "Database already contains users; seed skipped.")

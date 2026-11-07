@@ -1,24 +1,85 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, BadgeCheck, CalendarDays, CarFront, Check, CheckCircle2, ChevronDown, Clock3, Fuel, HeartHandshake, Headphones, KeyRound, LifeBuoy, LockKeyhole, Mail, MapPin, MapPinned, Menu, MoveRight, Navigation, Phone, Search, ShieldCheck, SlidersHorizontal, Sparkles, Star, UsersRound, WalletCards, X, Zap } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, BadgeCheck, Bike, CalendarDays, CarFront, Check, CheckCircle2, ChevronDown, Clock3, Fuel, HeartHandshake, Headphones, KeyRound, LifeBuoy, LockKeyhole, Mail, MapPin, MapPinned, Menu, MoveRight, Navigation, Phone, Route, Search, ShieldCheck, SlidersHorizontal, Sparkles, Star, UsersRound, WalletCards, X, Zap } from 'lucide-react';
 import { api } from './api';
+import { addTripDays, LONG_TRIP_PRESETS, MAX_TRIP_DAYS, tripDays, tripSearch, TripLengthPresets } from './trip';
 import { Badge, Button, dateShort, dateTime, dayInput, Empty, ErrorState, FormField, futureDate, Loading, money, SectionHead, useAuth, useLoad, useToast, VehicleCard } from './common';
 
-function SearchBar({branches}){
-  const navigate=useNavigate(), show=useToast();
-  const [form,setForm]=useState({branch:'',category:'',pickup:dayInput(2),return:dayInput(5)});
-  const update=(k,v)=>setForm(f=>({...f,[k]:v}));
-  function search(e){e.preventDefault();if(!form.pickup||!form.return||form.return<=form.pickup){show('Please choose a return date after your pickup date.','error');return}const q=new URLSearchParams({pickup_at:form.pickup+'T10:00',return_at:form.return+'T10:00'});if(form.branch)q.set('branch',form.branch);if(form.category)q.set('category',form.category);navigate('/vehicles?'+q.toString())}
-  return <div className="search-panel"><div className="search-panel-title"><div><span className="search-kicker">LET’S GET YOU MOVING</span><h2>Find your next ride</h2></div><span>Everything you need for the road ahead <ArrowRight size={14}/></span></div><form className="search-grid" onSubmit={search}><label className="search-field"><MapPin size={19}/><span><small>Pick-up location</small><select aria-label="Pick-up location" value={form.branch} onChange={e=>update('branch',e.target.value)}><option value="">All locations</option>{branches?.map(b=><option key={b.id} value={b.id}>{b.name}, {b.city}</option>)}</select></span><ChevronDown className="search-chevron" size={14}/></label><label className="search-field"><CalendarDays size={19}/><span><small>Pick-up date</small><input aria-label="Pick-up date" type="date" min={dayInput(0)} value={form.pickup} onChange={e=>update('pickup',e.target.value)} required/></span></label><label className="search-field"><CalendarDays size={19}/><span><small>Return date</small><input aria-label="Return date" type="date" min={form.pickup} value={form.return} onChange={e=>update('return',e.target.value)} required/></span></label><label className="search-field type-field"><CarFront size={19}/><span><small>Vehicle type</small><select aria-label="Vehicle type" value={form.category} onChange={e=>update('category',e.target.value)}><option value="">All vehicles</option><option value="suv">SUV</option><option value="sedan">Sedan</option><option value="hatchback">Hatchback</option><option value="electric">Electric</option><option value="bike">Bike</option><option value="luxury">Luxury</option></select></span><ChevronDown className="search-chevron" size={14}/></label><button className="search-submit" type="submit"><Search size={18}/> <span>Search vehicles</span></button></form></div>
+function SearchBar({branches}) {
+  const navigate = useNavigate(), show = useToast();
+  const [mode, setMode] = useState('standard');
+  const [form, setForm] = useState({branch:'', category:'', pickup:dayInput(2), return:dayInput(5)});
+  const update = (key, value) => setForm(f => ({...f, [key]:value}));
+  function changePickup(value) {
+    setForm(f => {
+      const duration = tripDays(f.pickup, f.return);
+      const keepLength = mode === 'long' && duration > 0 && duration <= MAX_TRIP_DAYS;
+      return {...f, pickup:value, return:keepLength ? addTripDays(value, duration) : (value && f.return <= value ? addTripDays(value, 3) : f.return)};
+    });
+  }
+  function changeMode(next) {
+    if (next === mode) return;
+    setMode(next);
+    setForm(f => ({...f, return:addTripDays(f.pickup, next === 'long' ? 7 : 3)}));
+  }
+  function search(e) {
+    e.preventDefault();
+    const days = tripDays(form.pickup, form.return);
+    if (!form.pickup || !form.return || days === null || days <= 0) {
+      show('Please choose a return date after your pickup date.', 'error'); return;
+    }
+    if (days > MAX_TRIP_DAYS) {
+      show('Rentals can be up to 90 days. Please contact us for longer trips.', 'error'); return;
+    }
+    const q = new URLSearchParams({pickup_at:form.pickup+'T10:00', return_at:form.return+'T10:00'});
+    if (form.branch) q.set('branch', form.branch);
+    if (form.category) q.set('category', form.category);
+    if (mode === 'long') q.set('trip', 'long');
+    navigate('/vehicles?'+q.toString());
+  }
+  return <div className="search-panel">
+    <div className="search-panel-title"><div><span className="search-kicker">LET’S GET YOU MOVING</span><h2>Find your next ride</h2></div><span>Everything you need for the road ahead <ArrowRight size={14}/></span></div>
+    <div className="trip-mode-row">
+      <div className="trip-mode-tabs" role="group" aria-label="Trip mode">
+        <button type="button" className={mode==='standard'?'selected':''} aria-pressed={mode==='standard'} onClick={()=>changeMode('standard')}><CarFront size={15}/> Standard trip</button>
+        <button type="button" className={mode==='long'?'selected':''} aria-pressed={mode==='long'} onClick={()=>changeMode('long')}><Route size={15}/> Long trip <span>NEW</span></button>
+      </div>
+      <p>{mode==='long' ? 'More time to explore. Standard daily rates apply.' : 'A ride for the everyday and the in-between.'}</p>
+    </div>
+    <form onSubmit={search}>
+      {mode==='long' && <TripLengthPresets pickup={form.pickup} returnAt={form.return} onChange={value=>update('return',value)}/>}
+      <div className="search-grid">
+        <label className="search-field"><MapPin size={19}/><span><small>Pick-up location</small><select aria-label="Pick-up location" value={form.branch} onChange={e=>update('branch',e.target.value)}><option value="">All locations</option>{branches?.map(b=><option key={b.id} value={b.id}>{b.name}, {b.city}</option>)}</select></span><ChevronDown className="search-chevron" size={14}/></label>
+        <label className="search-field"><CalendarDays size={19}/><span><small>Pick-up date</small><input aria-label="Pick-up date" type="date" min={dayInput(0)} value={form.pickup} onChange={e=>changePickup(e.target.value)} required/></span></label>
+        <label className="search-field"><CalendarDays size={19}/><span><small>Return date</small><input aria-label="Return date" type="date" min={addTripDays(form.pickup,1)} max={addTripDays(form.pickup,MAX_TRIP_DAYS)} value={form.return} onChange={e=>update('return',e.target.value)} required/></span></label>
+        <label className="search-field type-field"><CarFront size={19}/><span><small>Vehicle type</small><select aria-label="Vehicle type" value={form.category} onChange={e=>update('category',e.target.value)}><option value="">All vehicles</option><option value="cars">All cars</option><option value="bike">Bikes</option><option value="suv">SUV</option><option value="muv">MUV</option><option value="sedan">Sedan</option><option value="hatchback">Hatchback</option><option value="electric">Electric</option><option value="luxury">Luxury</option></select></span><ChevronDown className="search-chevron" size={14}/></label>
+        <button className="search-submit" type="submit"><Search size={18}/> <span>Search vehicles</span></button>
+      </div>
+    </form>
+  </div>;
 }
-const categoryLabels=[['all','All vehicles'],['suv','SUVs'],['sedan','Sedans'],['hatchback','Hatchbacks'],['electric','Electric'],['bike','Bikes'],['luxury','Luxury']];
+const categoryLabels=[['all','All vehicles'],['cars','Cars'],['bike','Bikes'],['suv','SUVs'],['muv','MUVs'],['sedan','Sedans'],['hatchback','Hatchbacks'],['electric','Electric'],['luxury','Luxury']];
 export function Home(){
   const {data:vehicles,loading,error}=useLoad('/vehicles?featured=true'); const {data:branches}=useLoad('/branches'); const {data:reviews}=useLoad('/reviews');
-  const [category,setCategory]=useState('all'); const filtered=(vehicles||[]).filter(v=>category==='all'||v.category_slug===category).slice(0,4);
+  const [category,setCategory]=useState('all'); const filtered=(vehicles||[]).filter(v=>category==='all'||(category==='cars'?v.category_slug!=='bike':v.category_slug===category)).slice(0,4);
+  const longStart=dayInput(2); const longTripLink='/vehicles?'+new URLSearchParams({trip:'long',pickup_at:longStart+'T10:00',return_at:addTripDays(longStart,7)+'T10:00'});
   return <>
     <div className="site-container home-hero-wrap"><section className="hero"><div className="hero-overlay"/><div className="hero-copy"><div className="hero-eyebrow"><span/> YOUR JOURNEY, YOUR WAY</div><h1>Go further.<br/><em>Feel more.</em></h1><p>From everyday drives to unforgettable escapes,<br className="desktop-only"/> there’s a perfect ride waiting for you.</p><div className="hero-buttons"><Link to="/vehicles" className="button button-white">Explore our fleet <ArrowUpRight size={17}/></Link><Link to="/about" className="hero-secondary">Get to know us <ArrowRight size={16}/></Link></div></div><div className="hero-side-label"><span>THE OPEN ROAD AWAITS</span><i/><span>ROAM / INDIA</span></div></section><SearchBar branches={branches}/></div>
     <section className="trust-strip site-container"><div><ShieldCheck/><span><strong>Thoughtfully maintained</strong><small>Every ride, road-ready</small></span></div><div><WalletCards/><span><strong>Transparent pricing</strong><small>No surprises along the way</small></span></div><div><Headphones/><span><strong>Here when you need us</strong><small>Support for your journey</small></span></div><div className="trust-end">GOOD JOURNEYS START HERE <ArrowUpRight size={16}/></div></section>
     <section className="fleet-section site-container"><SectionHead eyebrow="THE ROAM COLLECTION" title="Find a ride that feels right." description="The city, the coast, or somewhere in between. We’ve got the keys." action={<Link to="/vehicles" className="text-link">View all vehicles <span><ArrowUpRight size={17}/></span></Link>}/><div className="category-tabs" role="group" aria-label="Filter featured vehicles by category">{categoryLabels.map(([id,label])=><button key={id} onClick={()=>setCategory(id)} className={category===id?'selected':''}>{label}</button>)}</div>{loading?<Loading label="Finding great rides..."/>:error?<ErrorState message={error}/>:filtered.length?<div className="vehicle-grid">{filtered.map(v=><VehicleCard key={v.id} vehicle={v}/>)}</div>:<Empty title="No featured vehicles here yet" text="Explore the full fleet to find another great ride." action={<Link to="/vehicles" className="button button-outline">View all vehicles</Link>}/>}<div className="fleet-foot"><span><span className="blue-spark">✳</span> THE RIGHT RIDE CHANGES EVERYTHING</span><Link to="/vehicles">Explore the full collection <ArrowRight size={15}/></Link></div></section>
+    <section className="site-container long-trip-section">
+      <div className="long-trip-feature">
+        <div className="long-trip-copy">
+          <div className="long-trip-kicker"><span/> MADE FOR THE LONG WAY</div>
+          <h2>More days.<br/><em>More stories.</em></h2>
+          <p>Take the scenic route. Plan a week, a month, or make your own itinerary with cars and bikes ready for the journey.</p>
+          <div className="long-trip-highlights"><span><CalendarDays size={16}/> Up to 90 days</span><span><Bike size={17}/> Cars & bikes</span></div>
+          <Link to={longTripLink} className="button button-white">Plan a long trip <ArrowUpRight size={17}/></Link>
+          <small>Regular daily rates, service fee and GST apply.</small>
+        </div>
+        <div className="long-trip-image" role="img" aria-label="A car travels on a winding mountain road"><div className="long-trip-image-label"><span>THE OPEN ROAD IS CALLING</span><ArrowUpRight size={16}/></div></div>
+      </div>
+    </section>
     <section className="why-section"><div className="site-container"><SectionHead eyebrow="THE ROAM DIFFERENCE" title="A little more freedom. A lot less fuss." description="Everything we do is designed to make getting there the best part."/><div className="promise-grid"><div className="promise-card"><span className="promise-icon"><CarFront/></span><span className="promise-num">01 /</span><h3>A ride for every road</h3><p>From zippy city cars to spacious SUVs, find a vehicle that fits your kind of journey.</p></div><div className="promise-card"><span className="promise-icon"><WalletCards/></span><span className="promise-num">02 /</span><h3>Simple, honest pricing</h3><p>Know what you’re paying before you go, with a clear breakdown and no guesswork.</p></div><div className="promise-card"><span className="promise-icon"><HeartHandshake/></span><span className="promise-num">03 /</span><h3>Support along the way</h3><p>Plans change. Questions come up. We’re here to help keep your journey moving.</p></div></div></div></section>
     <section className="steps-section site-container"><div className="steps-copy"><div className="section-eyebrow"><span/> EASY AS 1, 2, 3</div><h2>More road trips.<br/>Less red tape.</h2><p>From browsing to booking, we’ve made every step feel a little easier.</p><Link to="/vehicles" className="button button-primary">Find your ride <ArrowUpRight size={17}/></Link></div><div className="steps-list"><div><span>01</span><div><h3>Find your perfect fit</h3><p>Browse our fleet and choose the vehicle that’s right for your plans.</p></div><Search size={21}/></div><div><span>02</span><div><h3>Make it yours</h3><p>Choose your dates, review your details and reserve in a few clicks.</p></div><CalendarDays size={21}/></div><div><span>03</span><div><h3>Pick up and go</h3><p>Grab the keys, settle in and let the adventure begin.</p></div><KeyRound size={21}/></div></div></section>
     <section className="reviews-section"><div className="site-container"><SectionHead eyebrow="WORDS FROM THE ROAD" title="Good journeys, great stories." description="A few kind words from the people who have gone places with us." action={<div className="review-score"><strong>★★★★★</strong><span>Reviews from Roam travelers</span></div>}/><div className="review-grid">{(reviews||[]).slice(0,3).map(r=><div className="review-card" key={r.id}><div className="review-stars">{'★'.repeat(r.rating)}{'☆'.repeat(5-r.rating)}</div><p>“{r.comment}”</p><div className="review-author"><span className="avatar">{r.name.charAt(0)}</span><div><strong>{r.name}</strong><small>Rented {r.vehicle}</small></div><span className="quote-mark">“</span></div></div>)}</div><div className="review-disclaimer">Reviews shown are sample data for this demo.</div></div></section>
@@ -27,21 +88,137 @@ export function Home(){
 }
 
 function PageTop({eyebrow,title,description}){return <div className="page-top"><div className="site-container"><div className="breadcrumb"><Link to="/">Home</Link><ChevronDown size={13} className="crumb-arrow"/><span>{title}</span></div><div className="section-eyebrow"><span/>{eyebrow}</div><h1>{title}</h1>{description&&<p>{description}</p>}</div></div>}
+function LongTripPlanner({params, onApply, onExit}) {
+  const pickupParam = params.get('pickup_at') || '', returnParam = params.get('return_at') || '';
+  const defaultPickup = dayInput(2);
+  const [pickup, setPickup] = useState(pickupParam.slice(0,10) || defaultPickup);
+  const [ret, setRet] = useState(returnParam.slice(0,10) || addTripDays(defaultPickup,7));
+  const [error, setError] = useState('');
+  useEffect(()=>{
+    setPickup(pickupParam.slice(0,10) || defaultPickup);
+    setRet(returnParam.slice(0,10) || addTripDays(defaultPickup,7));
+    setError('');
+  },[pickupParam,returnParam,defaultPickup]);
+  function changePickup(value) {
+    const duration = tripDays(pickup,ret);
+    setPickup(value);
+    setRet(addTripDays(value,duration > 0 && duration <= MAX_TRIP_DAYS ? duration : 7));
+    setError('');
+  }
+  function submit(e) {
+    e.preventDefault();
+    const days = tripDays(pickup,ret);
+    if (days === null || days <= 0) { setError('Choose a return date after pickup.'); return; }
+    if (days > MAX_TRIP_DAYS) { setError('Rentals can be up to 90 days.'); return; }
+    setError('');
+    onApply(pickup+'T10:00',ret+'T10:00');
+  }
+  return <section className="long-trip-planner" aria-label="Long trip planner">
+    <div className="planner-intro"><div className="planner-icon"><Route size={21}/></div><div><div className="section-eyebrow"><span/> LONG TRIP MODE</div><h2>A little longer on the road.</h2><p>Choose your dates and find rides available for the whole journey.</p></div><button className="planner-exit" type="button" onClick={onExit}>Exit mode <X size={14}/></button></div>
+    <form onSubmit={submit}>
+      <TripLengthPresets pickup={pickup} returnAt={ret} onChange={value=>{setRet(value);setError('')}}/>
+      <div className="planner-fields">
+        <FormField label="Pick-up date"><input aria-label="Long trip pick-up date" type="date" min={dayInput(0)} value={pickup} onChange={e=>changePickup(e.target.value)} required/></FormField>
+        <FormField label="Return date"><input aria-label="Long trip return date" type="date" min={addTripDays(pickup,1)} max={addTripDays(pickup,MAX_TRIP_DAYS)} value={ret} onChange={e=>{setRet(e.target.value);setError('')}} required/></FormField>
+        <button type="submit" className="button button-primary">Check availability <ArrowRight size={16}/></button>
+      </div>
+      {error && <p className="planner-error" role="alert">{error}</p>}
+      <p className="planner-footnote">Searches use 10:00 for pick-up and return; adjust the times before booking. Regular daily rates, service fee and GST apply.</p>
+    </form>
+  </section>;
+}
+
 export function Vehicles(){
   const [params,setParams]=useSearchParams(); const {data:categories}=useLoad('/categories'); const {data:branches}=useLoad('/branches');
   const query=params.toString(); const {data:vehicles,loading,error,reload}=useLoad('/vehicles'+(query?'?'+query:''));
   const set=(key,value)=>{const p=new URLSearchParams(params);value?p.set(key,value):p.delete(key);setParams(p)};
-  const selected=params.get('category')||'all';
-  return <><PageTop eyebrow="FIND YOUR FREEDOM" title="Find your perfect ride." description="Well-maintained vehicles for wherever you’re headed next."/><div className="site-container listing-layout"><aside className="filters-card"><div className="filter-heading"><div><SlidersHorizontal size={18}/><strong>Filters</strong></div><button onClick={()=>setParams({})}>Clear all</button></div><label className="filter-search"><Search size={17}/><input placeholder="Search make or model" aria-label="Search make or model" value={params.get('q')||''} onChange={e=>set('q',e.target.value)}/></label><div className="filter-group"><h3>VEHICLE TYPE</h3><button className={'filter-option '+(selected==='all'?'active':'')} onClick={()=>set('category','')}><span className="radio-dot"/>All vehicles</button>{categories?.map(c=><button key={c.id} className={'filter-option '+(selected===c.slug?'active':'')} onClick={()=>set('category',c.slug)}><span className="radio-dot"/>{c.name}<small>{c.count}</small></button>)}</div><div className="filter-group"><h3>LOCATION</h3><select aria-label="Filter by location" value={params.get('branch')||''} onChange={e=>set('branch',e.target.value)}><option value="">All locations</option>{branches?.map(b=><option key={b.id} value={b.id}>{b.name}, {b.city}</option>)}</select></div><div className="filter-group"><h3>DAILY PRICE (₹)</h3><div className="price-filters"><input type="number" min="0" placeholder="Min" aria-label="Minimum daily price" value={params.get('min_price')||''} onChange={e=>set('min_price',e.target.value)}/><span>—</span><input type="number" min="0" placeholder="Max" aria-label="Maximum daily price" value={params.get('max_price')||''} onChange={e=>set('max_price',e.target.value)}/></div></div><div className="filter-group"><h3>AVAILABILITY</h3><label className="check-option"><input type="checkbox" checked={params.get('available')==='true'} onChange={e=>set('available',e.target.checked?'true':'')}/> Available now</label>{params.get('pickup_at')&&<div className="date-filter-note"><CalendarDays size={16}/><span>{dateShort(params.get('pickup_at'))} – {dateShort(params.get('return_at'))}<button onClick={()=>{let p=new URLSearchParams(params);p.delete('pickup_at');p.delete('return_at');setParams(p)}}>Clear dates</button></span></div>}</div></aside><div className="listing-content"><div className="listing-toolbar"><div><h2>All vehicles <span>{!loading&&vehicles?vehicles.length:'—'}</span></h2><p>Find the right set of wheels for your journey.</p></div><label className="sort-label">Sort by <select aria-label="Sort vehicles" value={params.get('sort')||'featured'} onChange={e=>set('sort',e.target.value)}><option value="featured">Recommended</option><option value="price_asc">Price: low to high</option><option value="price_desc">Price: high to low</option><option value="name">Name A–Z</option></select></label></div>{loading?<Loading label="Finding vehicles..."/>:error?<ErrorState message={error} onRetry={reload}/>:vehicles?.length?<div className="vehicle-grid listing-grid">{vehicles.map(v=><VehicleCard key={v.id} vehicle={v}/>)}</div>:<Empty title="No rides found" text="Try changing your dates or filters to find a match." action={<Button variant="outline" onClick={()=>setParams({})}>Clear filters</Button>}/>}</div></div></>
+  const selected=params.get('category')||'all', isLongTrip=params.get('trip')==='long';
+  const hasDates=Boolean(params.get('pickup_at') && params.get('return_at'));
+  const carsCount=(categories||[]).filter(c=>c.slug!=='bike').reduce((sum,c)=>sum+c.count,0);
+  const longParams=new URLSearchParams(params), longPickup=params.get('pickup_at')||futureDate(2);
+  longParams.set('trip','long'); longParams.set('pickup_at',longPickup); longParams.set('return_at',addTripDays(longPickup,7)); longParams.delete('available');
+  function applyTrip(pickup,ret){const p=new URLSearchParams(params);p.set('trip','long');p.set('pickup_at',pickup);p.set('return_at',ret);p.delete('available');setParams(p)}
+  function exitTrip(){const p=new URLSearchParams(params);p.delete('trip');setParams(p)}
+  function clearDates(){const p=new URLSearchParams(params);p.delete('pickup_at');p.delete('return_at');p.delete('trip');setParams(p)}
+  return <>
+    <PageTop eyebrow={isLongTrip?'GO FURTHER, STAY LONGER':'FIND YOUR FREEDOM'} title={isLongTrip?'The long way looks good on you.':'Find your perfect ride.'} description={isLongTrip?'More time, more places, and the right ride for all of it.':'Well-maintained vehicles for wherever you’re headed next.'}/>
+    <div className="site-container listing-trip-wrap">{isLongTrip?<LongTripPlanner params={params} onApply={applyTrip} onExit={exitTrip}/>:<div className="listing-trip-invite"><span><Route size={18}/><span><strong>Going a little further?</strong> Plan an extended trip with a car or bike.</span></span><Link to={'/vehicles?'+longParams.toString()}>Try long trip mode <ArrowRight size={15}/></Link></div>}</div>
+    <div className="site-container listing-layout">
+      <aside className="filters-card">
+        <div className="filter-heading"><div><SlidersHorizontal size={18}/><strong>Filters</strong></div><button onClick={()=>setParams({})}>Clear all</button></div>
+        <label className="filter-search"><Search size={17}/><input placeholder="Search make or model" aria-label="Search make or model" value={params.get('q')||''} onChange={e=>set('q',e.target.value)}/></label>
+        <div className="filter-group"><h3>VEHICLE TYPE</h3>
+          <button className={'filter-option '+(selected==='all'?'active':'')} onClick={()=>set('category','')}><span className="radio-dot"/>All vehicles</button>
+          <button className={'filter-option '+(selected==='cars'?'active':'')} onClick={()=>set('category','cars')}><span className="radio-dot"/>All cars<small>{carsCount}</small></button>
+          {categories?.map(c=><button key={c.id} className={'filter-option '+(selected===c.slug?'active':'')} onClick={()=>set('category',c.slug)}><span className="radio-dot"/>{c.name}<small>{c.count}</small></button>)}
+        </div>
+        <div className="filter-group"><h3>LOCATION</h3><select aria-label="Filter by location" value={params.get('branch')||''} onChange={e=>set('branch',e.target.value)}><option value="">All locations</option>{branches?.map(b=><option key={b.id} value={b.id}>{b.name}, {b.city}</option>)}</select></div>
+        <div className="filter-group"><h3>DAILY PRICE (₹)</h3><div className="price-filters"><input type="number" min="0" placeholder="Min" aria-label="Minimum daily price" value={params.get('min_price')||''} onChange={e=>set('min_price',e.target.value)}/><span>—</span><input type="number" min="0" placeholder="Max" aria-label="Maximum daily price" value={params.get('max_price')||''} onChange={e=>set('max_price',e.target.value)}/></div></div>
+        <div className="filter-group"><h3>AVAILABILITY</h3><label className="check-option"><input type="checkbox" disabled={hasDates} checked={!hasDates&&params.get('available')==='true'} onChange={e=>set('available',e.target.checked?'true':'')}/> Available now</label>{hasDates&&<div className="date-filter-note"><CalendarDays size={16}/><span>{dateShort(params.get('pickup_at'))} – {dateShort(params.get('return_at'))}<button onClick={clearDates}>Clear dates</button></span></div>}</div>
+      </aside>
+      <div className="listing-content">
+        <div className="listing-toolbar"><div><h2>{isLongTrip&&hasDates?'Available for your trip':'All vehicles'} <span>{!loading&&vehicles?vehicles.length:'—'}</span></h2><p>{isLongTrip&&hasDates?'Showing rides available for your full selected dates.':'Find the right set of wheels for your journey.'}</p></div><label className="sort-label">Sort by <select aria-label="Sort vehicles" value={params.get('sort')||'featured'} onChange={e=>set('sort',e.target.value)}><option value="featured">Recommended</option><option value="price_asc">Price: low to high</option><option value="price_desc">Price: high to low</option><option value="name">Name A–Z</option></select></label></div>
+        {loading?<Loading label="Finding vehicles..."/>:error?<ErrorState message={error} onRetry={reload}/>:vehicles?.length?<div className="vehicle-grid listing-grid">{vehicles.map(v=><VehicleCard key={v.id} vehicle={v} search={tripSearch(params)}/>)}</div>:<Empty title="No rides found" text="Try changing your dates or filters to find a match." action={<Button variant="outline" onClick={()=>setParams({})}>Clear filters</Button>}/>}
+      </div>
+    </div>
+  </>;
 }
 
 function Spec({icon:Icon,label,value}){return <div className="detail-spec"><span><Icon size={20}/></span><small>{label}</small><strong>{value}</strong></div>}
 export function VehicleDetail(){
-  const {id}=useParams(), [params]=useSearchParams(), navigate=useNavigate(); const {data:v,loading,error}=useLoad('/vehicles/'+id); const [pickup,setPickup]=useState(params.get('pickup_at')||futureDate(2)), [ret,setRet]=useState(params.get('return_at')||futureDate(5)), [quote,setQuote]=useState(null), [checking,setChecking]=useState(false), [quoteError,setQuoteError]=useState('');
-  useEffect(()=>{if(!v||!pickup||!ret)return;let active=true;setChecking(true);setQuoteError('');const t=setTimeout(()=>api('/quote',{method:'POST',body:{vehicle_id:v.id,pickup_at:pickup,return_at:ret}}).then(q=>{if(active)setQuote(q)}).catch(e=>{if(active){setQuote(null);setQuoteError(e.message)}}).finally(()=>{if(active)setChecking(false)}),300);return()=>{active=false;clearTimeout(t)}},[v,pickup,ret]);
-  if(loading)return <div className="site-container page-loading"><Loading/></div>; if(error||!v)return <div className="site-container page-loading"><ErrorState message={error||'Vehicle not found.'}/><Link className="text-link" to="/vehicles">Back to vehicles <ArrowRight size={16}/></Link></div>;
-  function proceed(){navigate(`/book/${v.id}?${new URLSearchParams({pickup_at:pickup,return_at:ret})}`)}
-  return <div className="site-container detail-page"><div className="breadcrumb"><Link to="/">Home</Link><ChevronDown size={13} className="crumb-arrow"/><Link to="/vehicles">Vehicles</Link><ChevronDown size={13} className="crumb-arrow"/><span>{v.name}</span></div><div className="detail-header"><div><div className="section-eyebrow"><span/> THE ROAM COLLECTION</div><h1>{v.name}</h1><p><span className="rating"><span>★</span> {v.rating||'New'} {v.review_count>0&&<em>({v.review_count} review{v.review_count!==1?'s':''})</em>}</span><span className="dot-sep">•</span><MapPin size={15}/> {v.location}</p></div><Badge status={v.status}/></div><div className="detail-layout"><div><div className="detail-image"><img src={v.image_url} alt={v.name}/><span>{v.category} / {v.year}</span></div><p className="detail-disclaimer">Images are illustrative; the actual vehicle may vary.</p><div className="detail-body"><div className="detail-section"><h2>Meet your ride.</h2><p>{v.description}</p></div><div className="detail-section"><h2>Good to know</h2><div className="spec-grid"><Spec icon={UsersRound} label="SEATS" value={v.seats+' people'}/><Spec icon={Fuel} label="FUEL" value={v.fuel_type}/><Spec icon={SlidersHorizontal} label="TRANSMISSION" value={v.transmission}/><Spec icon={CarFront} label="CATEGORY" value={v.category}/></div></div><div className="detail-section"><div className="detail-review-title"><h2>What travelers say</h2><span className="rating"><span>★</span> {v.rating||'New'} {v.review_count>0&&<em>({v.review_count})</em>}</span></div>{v.reviews.length?v.reviews.map(r=><div className="detail-review" key={r.id}><div className="review-stars">{'★'.repeat(r.rating)}</div><p>“{r.comment}”</p><strong>{r.name}</strong><small> · {dateShort(r.created_at)}</small></div>):<p>No reviews yet. Be the first to share your experience after your trip.</p>}</div></div></div><aside className="booking-panel"><div className="booking-price"><div><strong>{money(v.daily_rate)}</strong><span> / day</span></div><small>plus taxes & fees</small></div><hr/><h3>Plan your journey</h3><FormField label="Pick-up date & time"><input type="datetime-local" value={pickup} min={futureDate(0)} onChange={e=>setPickup(e.target.value)}/></FormField><FormField label="Return date & time"><input type="datetime-local" value={ret} min={pickup} onChange={e=>setRet(e.target.value)}/></FormField>{checking?<div className="availability-check">Checking availability...</div>:quote?<div className={'availability-check '+(quote.available?'success':'failure')}>{quote.available?<CheckCircle2 size={16}/>:<X size={16}/>} {quote.message}</div>:quoteError?<div className="availability-check failure">{quoteError}</div>:null}{quote&&<div className="quick-price"><span>{money(v.daily_rate)} × {quote.days} day{quote.days!==1?'s':''}</span><strong>{money(quote.rental_amount)}</strong></div>}<button className="button button-primary full-button" onClick={proceed} disabled={!quote?.available||checking}>Continue to book <ArrowRight size={17}/></button><div className="booking-assurance"><ShieldCheck size={16}/> Free cancellation up to 24 hours before pickup</div></aside></div></div>
+  const {id}=useParams(), [params,setParams]=useSearchParams(), navigate=useNavigate();
+  const {data:v,loading,error}=useLoad('/vehicles/'+id);
+  const [pickup,setPickup]=useState(params.get('pickup_at')||futureDate(2)), [ret,setRet]=useState(params.get('return_at')||futureDate(5));
+  const [quote,setQuote]=useState(null), [checking,setChecking]=useState(false), [quoteError,setQuoteError]=useState('');
+  const isLongTrip=params.get('trip')==='long';
+  useEffect(()=>{
+    if(params.get('pickup_at'))setPickup(params.get('pickup_at'));
+    if(params.get('return_at'))setRet(params.get('return_at'));
+  },[id,params.get('pickup_at'),params.get('return_at')]);
+  useEffect(()=>{
+    if(!v||!pickup||!ret){setQuote(null);setChecking(false);setQuoteError('');return}
+    let active=true;setChecking(true);setQuote(null);setQuoteError('');
+    const t=setTimeout(()=>api('/quote',{method:'POST',body:{vehicle_id:v.id,pickup_at:pickup,return_at:ret}}).then(q=>{if(active)setQuote(q)}).catch(e=>{if(active)setQuoteError(e.message)}).finally(()=>{if(active)setChecking(false)}),300);
+    return()=>{active=false;clearTimeout(t)};
+  },[v,pickup,ret]);
+  function changePickup(value){
+    const days=tripDays(pickup,ret);
+    if(isLongTrip && LONG_TRIP_PRESETS.includes(days) && pickup.slice(10)===ret.slice(10))setRet(addTripDays(value,days));
+    setPickup(value);
+  }
+  function changeTripMode(enabled){
+    const next=new URLSearchParams(params), nextReturn=enabled?addTripDays(pickup,7):ret;
+    if(enabled)next.set('trip','long');else next.delete('trip');
+    next.set('pickup_at',pickup);next.set('return_at',nextReturn);
+    setRet(nextReturn);setParams(next,{replace:true});
+  }
+  function proceed(){
+    const q=new URLSearchParams({pickup_at:pickup,return_at:ret});
+    if(isLongTrip)q.set('trip','long');
+    navigate(`/book/${v.id}?${q}`);
+  }
+  if(loading)return <div className="site-container page-loading"><Loading/></div>;
+  if(error||!v)return <div className="site-container page-loading"><ErrorState message={error||'Vehicle not found.'}/><Link className="text-link" to="/vehicles">Back to vehicles <ArrowRight size={16}/></Link></div>;
+  return <div className="site-container detail-page">
+    <div className="breadcrumb"><Link to="/">Home</Link><ChevronDown size={13} className="crumb-arrow"/><Link to={'/vehicles'+tripSearch(params)}>Vehicles</Link><ChevronDown size={13} className="crumb-arrow"/><span>{v.name}</span></div>
+    <div className="detail-header"><div><div className="section-eyebrow"><span/> THE ROAM COLLECTION</div><h1>{v.name}</h1><p><span className="rating"><span>★</span> {v.rating||'New'} {v.review_count>0&&<em>({v.review_count} review{v.review_count!==1?'s':''})</em>}</span><span className="dot-sep">•</span><MapPin size={15}/> {v.location}</p></div><Badge status={v.status}/></div>
+    <div className="detail-layout">
+      <div><div className="detail-image"><img src={v.image_url} alt={v.name}/><span>{v.category} / {v.year}</span></div><p className="detail-disclaimer">Images are illustrative; the actual vehicle may vary.</p>
+        <div className="detail-body"><div className="detail-section"><h2>Meet your ride.</h2><p>{v.description}</p></div><div className="detail-section"><h2>Good to know</h2><div className="spec-grid"><Spec icon={UsersRound} label="SEATS" value={v.seats+' people'}/><Spec icon={Fuel} label="FUEL" value={v.fuel_type}/><Spec icon={SlidersHorizontal} label="TRANSMISSION" value={v.transmission}/><Spec icon={CarFront} label="CATEGORY" value={v.category}/></div></div><div className="detail-section"><div className="detail-review-title"><h2>What travelers say</h2><span className="rating"><span>★</span> {v.rating||'New'} {v.review_count>0&&<em>({v.review_count})</em>}</span></div>{v.reviews.length?v.reviews.map(r=><div className="detail-review" key={r.id}><div className="review-stars">{'★'.repeat(r.rating)}</div><p>“{r.comment}”</p><strong>{r.name}</strong><small> · {dateShort(r.created_at)}</small></div>):<p>No reviews yet. Be the first to share your experience after your trip.</p>}</div></div>
+      </div>
+      <aside className="booking-panel">
+        <div className="booking-price"><div><strong>{money(v.daily_rate)}</strong><span> / day</span></div><small>plus taxes & fees</small></div><hr/><h3>Plan your journey</h3>
+        {isLongTrip?<div className="detail-trip-banner"><Route size={18}/><div><strong>Long trip mode</strong><small>More time to explore, up to 90 days.</small></div><button type="button" onClick={()=>changeTripMode(false)}>Exit</button></div>:<button className="detail-long-trip-link" type="button" onClick={()=>changeTripMode(true)}><Route size={16}/> Planning a longer trip? <span>Try long trip mode <ArrowRight size={13}/></span></button>}
+        {isLongTrip&&<TripLengthPresets pickup={pickup} returnAt={ret} onChange={setRet}/>}
+        <FormField label="Pick-up date & time"><input type="datetime-local" value={pickup} min={futureDate(0)} onChange={e=>changePickup(e.target.value)}/></FormField>
+        <FormField label="Return date & time"><input type="datetime-local" value={ret} min={pickup} onChange={e=>setRet(e.target.value)}/></FormField>
+        {checking?<div className="availability-check">Checking availability...</div>:quote?<div className={'availability-check '+(quote.available?'success':'failure')}>{quote.available?<CheckCircle2 size={16}/>:<X size={16}/>} {quote.message}</div>:quoteError?<div className="availability-check failure">{quoteError}</div>:null}
+        {quote&&<div className="quick-price"><span>{money(v.daily_rate)} × {quote.days} day{quote.days!==1?'s':''}</span><strong>{money(quote.rental_amount)}</strong></div>}
+        <button className="button button-primary full-button" onClick={proceed} disabled={!quote?.available||checking}>Continue to book <ArrowRight size={17}/></button>
+        <div className="booking-assurance"><ShieldCheck size={16}/> Free cancellation up to 24 hours before pickup</div>
+      </aside>
+    </div>
+  </div>;
 }
 
 export function About(){return <><PageTop eyebrow="A LITTLE ABOUT US" title="We’re going places, together." description="We believe a great journey begins long before you turn the key."/><div className="site-container story-layout"><div className="story-image"><img src="/images/hero-drive.jpg" alt="A car on an open mountain road"/><span>TAKE THE SCENIC ROUTE <ArrowUpRight size={17}/></span></div><div className="story-copy"><div className="section-eyebrow"><span/> OUR STORY</div><h2>The freedom to go your own way.</h2><p>At Roam, we think getting there should feel just as good as being there. That’s why we make finding a dependable ride simple, straightforward, and a little more inspiring.</p><p>Whether it’s an everyday errand, a family getaway, or a spontaneous weekend away, we’re here to help you make the most of every mile.</p><Link to="/vehicles" className="button button-primary">Meet our fleet <ArrowUpRight size={16}/></Link></div></div><section className="why-section"><div className="site-container"><SectionHead eyebrow="WHAT MOVES US" title="Made for the journey." description="The little things that make a big difference."/><div className="promise-grid"><div className="promise-card"><span className="promise-icon"><ShieldCheck/></span><h3>Care in every detail</h3><p>Our fleet is maintained with your comfort and peace of mind in mind.</p></div><div className="promise-card"><span className="promise-icon"><WalletCards/></span><h3>Clear from the start</h3><p>Easy-to-understand prices and policies, so you can focus on the road.</p></div><div className="promise-card"><span className="promise-icon"><HeartHandshake/></span><h3>People first</h3><p>Friendly help and thoughtful service at every step of your journey.</p></div></div></div></section></>}

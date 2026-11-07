@@ -66,7 +66,15 @@ The login screen also has one-click demo buttons.
 | Administrator | `admin@roam.test` | `Admin123!` |
 | Staff | `staff@roam.test` | `Staff123!` |
 
-The sample includes available vehicles, a future reservation, completed trips and reviews, an overdue active rental, and a vehicle in maintenance. Dates are generated relative to the time the database is seeded.
+The sample includes cars and bikes, a future reservation, completed trips and reviews, an overdue active rental, and a vehicle in maintenance. Dates are generated relative to the time the database is seeded.
+
+For an **existing demo database**, the normal seed command leaves records alone. To add the new illustrative cars and bikes without resetting bookings or accounts, run:
+
+```bash
+python -m backend.seed --add-fleet
+```
+
+This opt-in command requires the original demo branches and categories. It adds only missing sample registrations, leaves existing and soft-deleted vehicles untouched, and can be run again safely. Do not add sample vehicles to a real fleet unless they are actually available; the names, rates, registrations and images are illustrative.
 
 To recreate the sample data, **destroying all existing records in the configured database**, stop the API and run:
 
@@ -139,7 +147,8 @@ The schema import and concurrent booking smoke test were also exercised against 
 
 ## How to use the application
 
-- **Public website:** search by location, category and dates; browse, filter and sort the fleet; view details and date-specific availability; contact the team.
+- **Public website:** search by location, category and dates; browse all cars or bikes, filter and sort the fleet; view details and date-specific availability; contact the team.
+- **Long trip mode:** choose the 7-, 14- or 30-day shortcut, or set custom dates up to 90 days. Search results are checked for availability across the whole period, and the selected dates carry through to vehicle details and booking. Date-only searches use 10:00 for pickup and return; the times can be changed on the vehicle page. Regular daily rates, service fee and GST apply; there is no automatic long-trip discount.
 - **Customer:** register or use the demo account, select dates and locations, review the server-calculated quote, reserve, choose a payment method, download a PDF receipt, manage bookings, edit a profile and review completed trips.
 - **Administrator:** use the dashboard to manage vehicles and image uploads, customers, bookings, payments, returns, maintenance, contact messages, and reports. Export a report as CSV.
 - **Staff:** manage bookings, returns and maintenance. Customer-account management, payments, financial reports and revenue metrics are restricted to administrators.

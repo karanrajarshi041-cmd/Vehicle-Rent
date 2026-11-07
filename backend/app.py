@@ -38,6 +38,7 @@ from .seed import seed_data
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / '.env')
 ACTIVE_BOOKING = ('Pending', 'Confirmed', 'Active')
+MAX_RENTAL_DAYS = 90
 MONEY = Decimal('0.01')
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
@@ -176,7 +177,7 @@ def quote_for(vehicle, start, end):
     days = max(1, math.ceil(seconds / 86400))
     if seconds <= 0:
         abort(400, description="Return must be after pickup.")
-    if days > 90:
+    if days > MAX_RENTAL_DAYS:
         abort(400, description="Rentals can be up to 90 days. Please contact us for longer trips.")
     rental = money(vehicle.daily_rate * days)
     fee = money(rental * Decimal('0.05'))
@@ -189,6 +190,9 @@ def validate_period(data, future=True):
     end = parse_date(data.get('return_at'), 'return date and time')
     if end <= start:
         abort(400, description="Return must be after pickup.")
+    # Search, quotes and bookings must all enforce the same maximum period.
+    if end - start > timedelta(days=MAX_RENTAL_DAYS):
+        abort(400, description="Rentals can be up to 90 days. Please contact us for longer trips.")
     if future and start < local_now():
         abort(400, description="Choose a pickup date and time in the future.")
     if start > local_now() + timedelta(days=366):
@@ -516,9 +520,11 @@ def create_app(config=None):
     def vehicle_list():
         activate_due_maintenance(g.db)
         q=select(Vehicle).where(Vehicle.is_deleted.is_(False))
-        category=request.args.get('category','').strip()
+        category=request.args.get('category','').strip().lower()
         if category and category!='all':
-            q=q.join(VehicleCategory).where(VehicleCategory.slug==category.lower())
+            # "Cars" groups all non-bike categories while keeping bikes separate.
+            q=q.join(VehicleCategory)
+            q=q.where(VehicleCategory.slug!='bike') if category=='cars' else q.where(VehicleCategory.slug==category)
         keyword=request.args.get('q','').strip()[:100]
         if keyword:
             term=f"%{keyword}%"
