@@ -9,7 +9,7 @@ import re
 import secrets
 import smtplib
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from email.message import EmailMessage
 from functools import wraps
@@ -100,10 +100,23 @@ def json_data():
     return value
 
 
+def effective_kyc_status(customer):
+    if not customer:
+        return 'Not submitted'
+    if customer.kyc_status == 'Verified' and customer.license_expiry and customer.license_expiry < local_now().date():
+        return 'Expired'
+    return customer.kyc_status
+
+
 def serialize_user(db, u):
     c = db.scalar(select(Customer).where(Customer.user_id == u.id))
     return dict(id=u.id, name=u.name, email=u.email, role=u.role, active=u.active,
                 phone=c.phone if c else '', license_number=c.license_number if c else '',
+                license_expiry=c.license_expiry.isoformat() if c and c.license_expiry else None,
+                kyc_status=effective_kyc_status(c), kyc_rejection_reason=c.kyc_rejection_reason if c else '',
+                has_license_document=bool(c and c.license_document),
+                kyc_submitted_at=c.kyc_submitted_at.isoformat() if c and c.kyc_submitted_at else None,
+                kyc_reviewed_at=c.kyc_reviewed_at.isoformat() if c and c.kyc_reviewed_at else None,
                 created_at=u.created_at.isoformat())
 
 
@@ -115,7 +128,8 @@ def serialize_vehicle(db, v):
                 category=category.name, category_slug=category.slug, category_id=v.category_id,
                 branch_id=v.branch_id, branch=branch.name, city=branch.city, location=f"{branch.name}, {branch.city}",
                 year=v.year, fuel_type=v.fuel_type, transmission=v.transmission, seats=v.seats,
-                daily_rate=float(v.daily_rate), status=v.status, image_url=v.image_url,
+                daily_rate=float(v.daily_rate), driver_available=v.driver_available,
+                driver_daily_rate=float(v.driver_daily_rate), status=v.status, image_url=v.image_url,
                 description=v.description, featured=v.featured,
                 rating=round(float(avg), 1) if avg else None, review_count=int(count))
 
@@ -139,6 +153,7 @@ def serialize_booking(db, b, include_user=False):
                 pickup_at=b.pickup_at.isoformat(), return_at=b.return_at.isoformat(),
                 pickup_location=b.pickup_location, return_location=b.return_location,
                 days=b.days, daily_rate=float(b.daily_rate), rental_amount=float(b.rental_amount),
+                with_driver=b.with_driver, driver_daily_rate=float(b.driver_daily_rate), driver_amount=float(b.driver_amount),
                 service_fee=float(b.service_fee), tax=float(b.tax), late_fee=float(b.late_fee),
                 extra_charge=float(b.extra_charge), total=float(b.total), status=b.status,
                 created_at=b.created_at.isoformat(), hold_expires_at=b.hold_expires_at.isoformat() if b.hold_expires_at else None, can_cancel=can_cancel,
@@ -172,7 +187,11 @@ def availability(db, vehicle, start, end, exclude_booking=None):
     return True, "Available for your dates."
 
 
-def quote_for(vehicle, start, end):
+def quote_for(vehicle, start, end, with_driver=False):
+    if not isinstance(with_driver, bool):
+        abort(400, description="Choose whether you need a driver.")
+    if with_driver and (not vehicle.driver_available or vehicle.driver_daily_rate <= 0):
+        abort(400, description="A driver is not available for this vehicle.")
     seconds = (end - start).total_seconds()
     days = max(1, math.ceil(seconds / 86400))
     if seconds <= 0:
@@ -180,9 +199,45 @@ def quote_for(vehicle, start, end):
     if days > MAX_RENTAL_DAYS:
         abort(400, description="Rentals can be up to 90 days. Please contact us for longer trips.")
     rental = money(vehicle.daily_rate * days)
-    fee = money(rental * Decimal('0.05'))
-    tax = money((rental + fee) * Decimal('0.05'))
-    return dict(days=days, daily_rate=vehicle.daily_rate, rental_amount=rental, service_fee=fee, tax=tax, total=rental+fee+tax)
+    driver_rate = money(vehicle.driver_daily_rate) if with_driver else Decimal('0.00')
+    driver_amount = money(driver_rate * days)
+    subtotal = rental + driver_amount
+    fee = money(subtotal * Decimal('0.05'))
+    tax = money((subtotal + fee) * Decimal('0.05'))
+    return dict(days=days, daily_rate=vehicle.daily_rate, rental_amount=rental,
+                with_driver=with_driver, driver_daily_rate=driver_rate, driver_amount=driver_amount,
+                service_fee=fee, tax=tax, total=subtotal+fee+tax)
+
+
+def ensure_self_drive_eligible(db, user, return_at):
+    """A chauffeur-driven booking bypasses this; self-drive requires valid KYC."""
+    customer = db.scalar(select(Customer).where(Customer.user_id == user.id))
+    if not customer or customer.kyc_status != 'Verified':
+        abort(403, description="Upload your driving licence and have it verified before booking a self-drive vehicle. You can book an eligible car with a driver instead.")
+    if not customer.license_number or not customer.license_expiry:
+        abort(403, description="Your verified licence details are incomplete. Please submit your licence again.")
+    if customer.license_expiry < local_now().date():
+        abort(403, description="Your driving licence has expired. Submit your renewed licence for verification, or choose a car with a driver.")
+    if customer.license_expiry < return_at.date():
+        abort(403, description="Your driving licence must remain valid through the return date. Submit a renewed licence or choose a car with a driver.")
+
+
+def remind_about_license_expiry(db, user):
+    if user.role != 'customer':
+        return
+    customer = db.scalar(select(Customer).where(Customer.user_id == user.id))
+    if not customer or customer.kyc_status != 'Verified' or not customer.license_expiry or customer.kyc_reminder_sent_at:
+        return
+    days_left = (customer.license_expiry - local_now().date()).days
+    if days_left > 30:
+        return
+    title = 'Your driving licence has expired' if days_left < 0 else 'Your driving licence expires soon'
+    message = (f'Your licence expired on {customer.license_expiry.strftime("%d %b %Y")}. Submit your renewed licence before a self-drive trip.'
+               if days_left < 0 else
+               f'Your licence expires on {customer.license_expiry.strftime("%d %b %Y")} ({days_left} days left). Renew it before your next self-drive trip.')
+    notify(db, user.id, title, message)
+    customer.kyc_reminder_sent_at = local_now()
+    db.commit()
 
 
 def validate_period(data, future=True):
@@ -311,6 +366,7 @@ def create_app(config=None):
         SESSION_COOKIE_SECURE=os.environ.get('SESSION_COOKIE_SECURE', '0') == '1',
         PERMANENT_SESSION_LIFETIME=timedelta(hours=12), MAX_CONTENT_LENGTH=5 * 1024 * 1024,
         SEED_DEMO=os.environ.get('SEED_DEMO','1') == '1', UPLOAD_DIR=os.environ.get('UPLOAD_DIR', ''),
+        KYC_UPLOAD_DIR=os.environ.get('KYC_UPLOAD_DIR', ''),
         # CSP frame-ancestors source list. Empty = 'self' in production, '*' in development
         # (so local previews and hosted sandboxes can embed the app in an iframe).
         FRAME_ANCESTORS=os.environ.get('FRAME_ANCESTORS', '').strip(),
@@ -338,6 +394,8 @@ def create_app(config=None):
     login_attempts = defaultdict(list)
     upload_dir = Path(app.config['UPLOAD_DIR']) if app.config.get('UPLOAD_DIR') else ROOT / 'backend' / 'instance' / 'uploads'
     upload_dir.mkdir(parents=True, exist_ok=True)
+    kyc_dir = Path(app.config['KYC_UPLOAD_DIR']) if app.config.get('KYC_UPLOAD_DIR') else ROOT / 'backend' / 'instance' / 'kyc'
+    kyc_dir.mkdir(parents=True, exist_ok=True)
 
     @app.before_request
     def prepare_request():
@@ -398,7 +456,7 @@ def create_app(config=None):
 
     @app.errorhandler(413)
     def too_large(err):
-        return jsonify(error='Image is too large. The limit is 5 MB.'), 413
+        return jsonify(error='Upload is too large. The limit is 5 MB.'), 413
 
     @app.get('/api/health')
     def health():
@@ -409,6 +467,8 @@ def create_app(config=None):
         if not session.get('csrf'):
             session['csrf'] = secrets.token_urlsafe(32)
         u = current_user(g.db)
+        if u:
+            remind_about_license_expiry(g.db, u)
         return jsonify(user=serialize_user(g.db, u) if u else None, csrf=session['csrf'], payment_mode=app.config['PAYMENT_MODE'])
 
     @app.post('/api/auth/register')
@@ -494,7 +554,7 @@ def create_app(config=None):
         data=json_data(); g.user.name=text(data.get('name'),'Name',100,2)
         c=g.db.scalar(select(Customer).where(Customer.user_id==g.user.id))
         if c:
-            c.phone=text(data.get('phone',''),'Phone',24,0); c.license_number=text(data.get('license_number',''),'License number',50,0)
+            c.phone=text(data.get('phone',''),'Phone',24,0)
         if data.get('new_password'):
             current_password=data.get('current_password','')
             if not isinstance(current_password,str) or len(current_password)>128 or not check_password_hash(g.user.password_hash,current_password):
@@ -503,6 +563,84 @@ def create_app(config=None):
             current_digest=hashlib.sha256(session['auth_token'].encode()).hexdigest()
             g.db.execute(delete(AuthSession).where(AuthSession.user_id==g.user.id,AuthSession.token_hash!=current_digest))
         g.db.commit(); return jsonify(user=serialize_user(g.db,g.user))
+
+    def private_kyc_document(customer):
+        if not customer or not customer.license_document:
+            abort(404, description='Licence document not found.')
+        filename = customer.license_document
+        if Path(filename).name != filename:
+            abort(404, description='Licence document not found.')
+        path = kyc_dir / filename
+        if not path.is_file():
+            abort(404, description='Licence document not found.')
+        mimetype = 'application/pdf' if filename.lower().endswith('.pdf') else 'image/jpeg'
+        # Re-encoded images are safe to preview. PDFs download instead of opening
+        # active document content in the application's origin.
+        return send_file(path, mimetype=mimetype, as_attachment=mimetype == 'application/pdf',
+                         download_name='driving-licence' + Path(filename).suffix)
+
+    @app.get('/api/kyc/document')
+    @require('customer')
+    def my_kyc_document():
+        customer = g.db.scalar(select(Customer).where(Customer.user_id == g.user.id))
+        return private_kyc_document(customer)
+
+    @app.post('/api/kyc')
+    @require('customer')
+    def submit_kyc():
+        customer = g.db.scalar(select(Customer).where(Customer.user_id == g.user.id))
+        if not customer:
+            abort(404, description='Customer profile not found.')
+        number = text(request.form.get('license_number'), 'Driving licence number', 50, 5).upper()
+        try:
+            expiry = date.fromisoformat(request.form.get('license_expiry', ''))
+        except (TypeError, ValueError):
+            abort(400, description='Enter a valid licence expiry date.')
+        if expiry <= local_now().date():
+            abort(400, description='Your driving licence must have a future expiry date.')
+        file = request.files.get('document')
+        if not file or not file.filename:
+            abort(400, description='Select a JPG, PNG, WebP, or PDF licence document.')
+        new_name = None
+        try:
+            header = file.stream.read(5)
+            file.stream.seek(0)
+            if header == b'%PDF-':
+                new_name = secrets.token_hex(16) + '.pdf'
+                file.save(kyc_dir / new_name)
+            else:
+                Image.MAX_IMAGE_PIXELS = 24_000_000
+                image = Image.open(file.stream)
+                image.verify()
+                file.stream.seek(0)
+                image = Image.open(file.stream)
+                if image.format not in ('JPEG', 'PNG', 'WEBP'):
+                    abort(400, description='Only JPG, PNG, WebP, and PDF documents are supported.')
+                image = ImageOps.exif_transpose(image).convert('RGB')
+                image.thumbnail((2200, 2200))
+                new_name = secrets.token_hex(16) + '.jpg'
+                image.save(kyc_dir / new_name, 'JPEG', quality=88, optimize=True)
+        except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+            if new_name:
+                (kyc_dir / new_name).unlink(missing_ok=True)
+            abort(400, description='That file is not a valid licence image or PDF.')
+        old_document = customer.license_document
+        customer.license_number = number
+        customer.license_expiry = expiry
+        customer.license_document = new_name
+        customer.kyc_status = 'Pending'
+        customer.kyc_rejection_reason = ''
+        customer.kyc_submitted_at = local_now()
+        customer.kyc_reviewed_at = None
+        customer.kyc_reviewed_by = None
+        customer.kyc_reminder_sent_at = None
+        for admin in g.db.scalars(select(User).where(User.role == 'admin', User.active.is_(True))):
+            notify(g.db, admin.id, 'Licence ready for review', f'{g.user.name} submitted a driving licence for KYC verification.')
+        notify(g.db, g.user.id, 'Licence submitted', 'Your driving licence is pending administrator review. We will notify you after verification.')
+        g.db.commit()
+        if old_document and old_document != new_name and Path(old_document).name == old_document:
+            (kyc_dir / old_document).unlink(missing_ok=True)
+        return jsonify(message='Licence submitted for verification.', user=serialize_user(g.db, g.user)), 201
 
     @app.get('/api/categories')
     def categories():
@@ -591,9 +729,10 @@ def create_app(config=None):
         except (ValueError,TypeError): abort(400,description='Choose a vehicle.')
         v=g.db.get(Vehicle,vehicle_id)
         if not v or v.is_deleted: abort(404,description='Vehicle not found.')
-        start,end=validate_period(d); amounts=quote_for(v,start,end)
+        start,end=validate_period(d); amounts=quote_for(v,start,end,d.get('with_driver',False))
         available,reason=availability(g.db,v,start,end)
-        return jsonify({**{k:float(x) if isinstance(x,Decimal) else x for k,x in amounts.items()},'available':available,'message':reason})
+        return jsonify({**{k:float(x) if isinstance(x,Decimal) else x for k,x in amounts.items()},
+                        'available':available,'message':reason,'requires_kyc':not amounts['with_driver']})
 
     @app.post('/api/bookings')
     @require('customer')
@@ -606,15 +745,18 @@ def create_app(config=None):
         # A row-level lock prevents concurrent MySQL transactions booking the same vehicle.
         v=g.db.scalar(select(Vehicle).where(Vehicle.id==vehicle_id).with_for_update())
         if not v or v.is_deleted: abort(404,description='Vehicle not found.')
-        amounts=quote_for(v,start,end); ok,reason=availability(g.db,v,start,end)
+        amounts=quote_for(v,start,end,d.get('with_driver',False)); ok,reason=availability(g.db,v,start,end)
         if not ok: abort(409,description=reason)
+        if not amounts['with_driver']:
+            ensure_self_drive_eligible(g.db, g.user, end)
         pickup=text(d.get('pickup_location'),'Pickup location',180,2)
         ret=text(d.get('return_location'),'Return location',180,2)
         b=Booking(user_id=g.user.id,vehicle_id=v.id,pickup_at=start,return_at=end,pickup_location=pickup,return_location=ret,
                   status='Pending',hold_expires_at=local_now()+timedelta(minutes=15),created_at=local_now(),**amounts)
         g.db.add(b); g.db.flush()
         g.db.add(Payment(booking_id=b.id,amount=b.total,status='Pending',method='',provider='',created_at=local_now()))
-        notify(g.db,g.user.id,'Your booking is reserved',f'Booking RM-{b.id:05d} is awaiting payment.')
+        service = 'with a driver' if b.with_driver else 'self-drive'
+        notify(g.db,g.user.id,'Your booking is reserved',f'Booking RM-{b.id:05d} ({service}) is awaiting payment.')
         g.db.commit()
         return jsonify(booking=serialize_booking(g.db,b)),201
 
@@ -649,6 +791,8 @@ def create_app(config=None):
         b=g.db.scalar(select(Booking).where(Booking.id==booking_id).with_for_update())
         if not b or b.user_id!=g.user.id: abort(404,description='Booking not found.')
         if b.status in ('Cancelled','Rejected'): abort(400,description='This booking is no longer payable.')
+        if b.status == 'Pending' and not b.with_driver:
+            ensure_self_drive_eligible(g.db, g.user, b.return_at)
         p=g.db.scalar(select(Payment).where(Payment.booking_id==b.id,Payment.status.in_(('Pending','Failed'))).order_by(Payment.id).with_for_update())
         if not p: abort(400,description='There is no outstanding payment for this booking.')
         p.method=method; p.status='Pending'
@@ -724,7 +868,7 @@ def create_app(config=None):
         pdf.setFillColorRGB(.09,.20,.38); pdf.setFont('Helvetica-Bold',24); pdf.drawString(48,790,'roam.'); pdf.setFont('Helvetica',10); pdf.drawString(48,770,'RENTAL RECEIPT / BOOKING SUMMARY')
         pdf.setFillColorRGB(.12,.15,.21); pdf.setFont('Helvetica-Bold',16); pdf.drawString(48,728,f'Booking RM-{b.id:05d}')
         pdf.setFont('Helvetica',11); y=700
-        rows=[('Customer',user.name),('Vehicle',f'{v.brand} {v.model}'),('Pickup',b.pickup_at.strftime('%d %b %Y, %I:%M %p')),('Return',b.return_at.strftime('%d %b %Y, %I:%M %p')),('Status',b.status),('Rental charge',f'INR {b.rental_amount:,.2f}'),('Service fee',f'INR {b.service_fee:,.2f}'),('GST',f'INR {b.tax:,.2f}'),('Late / additional charges',f'INR {b.late_fee+b.extra_charge:,.2f}'),('Total',f'INR {b.total:,.2f}')]
+        rows=[('Customer',user.name),('Vehicle',f'{v.brand} {v.model}'),('Rental type','With driver' if b.with_driver else 'Self-drive'),('Pickup',b.pickup_at.strftime('%d %b %Y, %I:%M %p')),('Return',b.return_at.strftime('%d %b %Y, %I:%M %p')),('Status',b.status),('Vehicle rental',f'INR {b.rental_amount:,.2f}'),('Driver charge',f'INR {b.driver_amount:,.2f}'),('Service fee',f'INR {b.service_fee:,.2f}'),('GST',f'INR {b.tax:,.2f}'),('Late / additional charges',f'INR {b.late_fee+b.extra_charge:,.2f}'),('Total',f'INR {b.total:,.2f}')]
         for label,value in rows:
             pdf.drawString(48,y,label); pdf.drawRightString(545,y,value); y-=25
         y-=15; pdf.setFont('Helvetica-Bold',12); pdf.drawString(48,y,'Payment history'); y-=23; pdf.setFont('Helvetica',10)
@@ -797,9 +941,16 @@ def create_app(config=None):
         try:
             v.category_id=int(d.get('category_id')); v.branch_id=int(d.get('branch_id')); v.year=int(d.get('year')); v.seats=int(d.get('seats'))
         except (TypeError,ValueError): abort(400,description='Choose a category and location and enter a valid year and seating capacity.')
-        if not g.db.get(VehicleCategory,v.category_id) or not g.db.get(Branch,v.branch_id): abort(400,description='Invalid category or location.')
+        category=g.db.get(VehicleCategory,v.category_id); branch=g.db.get(Branch,v.branch_id)
+        if not category or not branch: abort(400,description='Invalid category or location.')
         if not (1990<=v.year<=local_now().year+1) or not (1<=v.seats<=60): abort(400,description='Enter a valid vehicle year and seating capacity.')
         v.daily_rate=parse_money(d.get('daily_rate'),'daily rate',Decimal('0.01'))
+        v.driver_available=d.get('driver_available',False)
+        if not isinstance(v.driver_available,bool): abort(400,description='Choose whether a driver is available for this vehicle.')
+        v.driver_daily_rate=parse_money(d.get('driver_daily_rate',0),'driver daily rate')
+        if category.slug=='bike' and v.driver_available: abort(400,description='Driver add-ons are only available for cars, not bikes.')
+        if v.driver_available and v.driver_daily_rate<=0: abort(400,description='Enter a driver daily rate greater than zero.')
+        if not v.driver_available: v.driver_daily_rate=Decimal('0.00')
         v.fuel_type=d.get('fuel_type'); v.transmission=d.get('transmission')
         if v.fuel_type not in ('Petrol','Diesel','Electric','CNG','Hybrid'): abort(400,description='Select a valid fuel type.')
         if v.transmission not in ('Manual','Automatic'): abort(400,description='Select a valid transmission.')
@@ -878,6 +1029,45 @@ def create_app(config=None):
         if not isinstance(active,bool): abort(400,description='A valid account status is required.')
         u.active=active; g.db.commit(); return jsonify(message='Customer account updated.',user=serialize_user(g.db,u))
 
+    @app.get('/api/admin/customers/<int:user_id>/kyc/document')
+    @require('admin')
+    def admin_kyc_document(user_id):
+        customer = g.db.scalar(select(Customer).where(Customer.user_id == user_id))
+        if not customer:
+            abort(404, description='Customer not found.')
+        return private_kyc_document(customer)
+
+    @app.post('/api/admin/customers/<int:user_id>/kyc')
+    @require('admin')
+    def review_kyc(user_id):
+        u = g.db.get(User, user_id)
+        customer = g.db.scalar(select(Customer).where(Customer.user_id == user_id))
+        if not u or u.role != 'customer' or not customer:
+            abort(404, description='Customer not found.')
+        data = json_data()
+        decision = data.get('status')
+        if decision not in ('Verified', 'Rejected'):
+            abort(400, description='Choose Verified or Rejected.')
+        if customer.kyc_status != 'Pending' or not customer.license_document:
+            abort(400, description='This customer does not have a licence awaiting review.')
+        reason = text(data.get('reason', ''), 'Rejection reason', 500, 0)
+        if decision == 'Verified':
+            if not customer.license_number or not customer.license_expiry or customer.license_expiry <= local_now().date():
+                abort(400, description='A valid licence number and future expiry date are required before approval.')
+            reason = ''
+            message = 'Your driving licence has been verified. You can now book self-drive vehicles for dates covered by its validity.'
+        else:
+            reason = text(reason, 'Rejection reason', 500, 3)
+            message = f'Your driving licence was rejected: {reason} Please submit it again.'
+        customer.kyc_status = decision
+        customer.kyc_rejection_reason = reason
+        customer.kyc_reviewed_at = local_now()
+        customer.kyc_reviewed_by = g.user.id
+        customer.kyc_reminder_sent_at = None
+        notify(g.db, u.id, f'Licence {decision.lower()}', message)
+        g.db.commit()
+        return jsonify(message=f'Customer licence {decision.lower()}.', user=serialize_user(g.db, u))
+
     @app.get('/api/admin/bookings')
     @require('admin','staff')
     def admin_bookings():
@@ -894,6 +1084,8 @@ def create_app(config=None):
         target=json_data().get('status')
         allowed={'Pending':('Confirmed','Rejected','Cancelled'),'Confirmed':('Active','Cancelled'),'Active':(),'Completed':(),'Cancelled':(),'Rejected':()}
         if target not in allowed.get(b.status,()): abort(400,description='That booking status change is not allowed.')
+        if target in ('Confirmed', 'Active') and not b.with_driver:
+            ensure_self_drive_eligible(g.db, g.db.get(User, b.user_id), b.return_at)
         if target in ('Cancelled','Rejected'):
             msg=cancel_booking(g.db,b,target)
         elif target=='Active':
@@ -930,6 +1122,8 @@ def create_app(config=None):
         if status=='Paid':
             if p.status not in ('Pending','Failed') or p.provider=='razorpay_test': abort(400,description='Gateway payments must be verified by the gateway; already paid payments cannot be paid again.')
             if b.status in ('Cancelled','Rejected'): abort(400,description='Cannot collect payment for a cancelled booking.')
+            if b.status == 'Pending' and not b.with_driver:
+                ensure_self_drive_eligible(g.db, g.db.get(User, b.user_id), b.return_at)
             p.status='Paid'; p.paid_at=local_now(); p.provider=p.provider or 'cash'; p.method=p.method or 'Cash'; p.reference=p.reference or f'MANUAL-{p.id:05d}'
             if b.status=='Pending': b.status='Confirmed'; b.hold_expires_at=None
             notify(g.db,b.user_id,'Payment recorded',f'Payment for RM-{b.id:05d} was marked paid.')
@@ -970,7 +1164,7 @@ def create_app(config=None):
         condition=text(d.get('condition'),'Vehicle condition',100,2); notes=text(d.get('notes',''),'Notes',1000,0)
         extra=parse_money(d.get('additional_charges',0),'additional charges')
         late_days=max(0,math.ceil((actual-b.return_at).total_seconds()/86400))
-        late=money(b.daily_rate*late_days)
+        late=money((b.daily_rate + (b.driver_daily_rate if b.with_driver else Decimal('0')))*late_days)
         r=VehicleReturn(booking_id=b.id,actual_return_at=actual,vehicle_condition=condition,late_fee=late,additional_charges=extra,notes=notes)
         g.db.add(r); b.status='Completed'; b.late_fee=late; b.extra_charge=extra; b.total=money(b.total+late+extra)
         if late+extra>0: g.db.add(Payment(booking_id=b.id,amount=late+extra,status='Pending',method='',provider='',created_at=local_now()))

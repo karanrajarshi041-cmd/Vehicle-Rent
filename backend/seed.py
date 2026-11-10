@@ -81,6 +81,8 @@ def add_sample_vehicles(db):
             brand=item['brand'], model=item['model'], registration=item['registration'],
             year=item['year'], fuel_type=item['fuel_type'], transmission=item['transmission'],
             seats=item['seats'], daily_rate=Decimal(item['daily_rate']),
+            driver_available=item['category'] != 'bike',
+            driver_daily_rate=Decimal('800') if item['category'] != 'bike' else Decimal('0'),
             image_url='/images/' + item['image'] + '.jpg', description=item['description'],
             featured=True, status='Available', created_at=local_now(),
         ))
@@ -101,12 +103,22 @@ def seed_data(db):
     c = User(name="Rohan Mehta", email="rohan@roam.test", password_hash=generate_password_hash("Demo12345!"), role="customer", created_at=now - timedelta(days=80))
     d = User(name="Ananya Roy", email="ananya@roam.test", password_hash=generate_password_hash("Demo12345!"), role="customer", created_at=now - timedelta(days=70))
     db.add_all([admin,staff,a,b,c,d]); db.flush()
-    db.add_all([Customer(user_id=x.id, phone=p, license_number="") for x,p in [(a,"+91 98765 43210"),(b,"+91 98765 43211"),(c,"+91 98765 43212"),(d,"+91 98765 43213")]])
+    # Demo travelers are pre-verified so the existing one-click customer demo
+    # remains usable. New registrations always start at Not submitted.
+    demo_customers = []
+    for index, (user, phone) in enumerate([(a,"+91 98765 43210"),(b,"+91 98765 43211"),(c,"+91 98765 43212"),(d,"+91 98765 43213")]):
+        demo_customers.append(Customer(
+            user_id=user.id, phone=phone, license_number=f"WB0{index + 1}202400{index + 1:04d}",
+            license_expiry=(now + timedelta(days=20 if user is b else 730)).date(),
+            kyc_status='Verified', kyc_submitted_at=now-timedelta(days=30), kyc_reviewed_at=now-timedelta(days=29),
+            kyc_reviewed_by=admin.id,
+        ))
+    db.add_all(demo_customers)
     cats = {name: VehicleCategory(name=name, slug=slug) for name,slug in [("SUV","suv"),("Sedan","sedan"),("Hatchback","hatchback"),("Electric","electric"),("Bike","bike"),("Luxury","luxury"),("MUV","muv")]}
     branches = [Branch(name="Park Street", city="Kolkata", address="18 Park Street, Kolkata, West Bengal"), Branch(name="Salt Lake", city="Kolkata", address="Sector V, Salt Lake, Kolkata, West Bengal"), Branch(name="Indiranagar", city="Bengaluru", address="100 Feet Road, Indiranagar, Bengaluru"), Branch(name="Connaught Place", city="New Delhi", address="Connaught Place, New Delhi")]
     db.add_all(list(cats.values()) + branches); db.flush()
     def vehicle(cat, branch, brand, model, reg, year, fuel, transmission, seats, rate, image, featured=False, status="Available", desc=""):
-        v = Vehicle(category_id=cats[cat].id, branch_id=branches[branch].id, brand=brand, model=model, registration=reg, year=year, fuel_type=fuel, transmission=transmission, seats=seats, daily_rate=Decimal(rate), image_url="/images/"+image+".jpg", featured=featured, status=status, description=desc or "A comfortable, well-maintained drive for city escapes and the open road.", created_at=now)
+        v = Vehicle(category_id=cats[cat].id, branch_id=branches[branch].id, brand=brand, model=model, registration=reg, year=year, fuel_type=fuel, transmission=transmission, seats=seats, daily_rate=Decimal(rate), driver_available=cat != "Bike", driver_daily_rate=Decimal("1200" if cat == "Luxury" else "800") if cat != "Bike" else Decimal("0"), image_url="/images/"+image+".jpg", featured=featured, status=status, description=desc or "A comfortable, well-maintained drive for city escapes and the open road.", created_at=now)
         db.add(v); db.flush(); return v
     v1=vehicle("SUV",0,"Hyundai","Creta SX","WB-01-AB-1201",2024,"Petrol","Automatic",5,2499,"car-suv",True,desc="Spacious, confident and made for the long way around. The perfect all-rounder for city trips and weekend escapes.")
     v2=vehicle("Sedan",0,"Honda","City ZX","WB-01-AB-1202",2023,"Petrol","Automatic",5,2199,"car-sedan",True,desc="A refined drive with room to stretch out. Enjoy effortless comfort on every journey.")

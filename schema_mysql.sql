@@ -59,10 +59,21 @@ CREATE TABLE customers (
 	user_id INTEGER NOT NULL, 
 	phone VARCHAR(24) NOT NULL, 
 	license_number VARCHAR(50) NOT NULL, 
+	license_expiry DATE,
+	kyc_status VARCHAR(20) NOT NULL,
+	license_document VARCHAR(255),
+	kyc_rejection_reason VARCHAR(500) NOT NULL,
+	kyc_submitted_at DATETIME,
+	kyc_reviewed_at DATETIME,
+	kyc_reviewed_by INTEGER,
+	kyc_reminder_sent_at DATETIME,
 	PRIMARY KEY (id), 
+	CONSTRAINT ck_customer_kyc_status CHECK (kyc_status IN ('Not submitted', 'Pending', 'Verified', 'Rejected')),
 	UNIQUE (user_id), 
-	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
+	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE,
+	FOREIGN KEY(kyc_reviewed_by) REFERENCES users (id) ON DELETE SET NULL
 )ENGINE=InnoDB CHARSET=utf8mb4;
+CREATE INDEX ix_customers_kyc_status ON customers (kyc_status);
 
 CREATE TABLE notifications (
 	id INTEGER NOT NULL AUTO_INCREMENT, 
@@ -88,6 +99,8 @@ CREATE TABLE vehicles (
 	transmission VARCHAR(24) NOT NULL, 
 	seats INTEGER NOT NULL, 
 	daily_rate NUMERIC(10, 2) NOT NULL, 
+	driver_available BOOL NOT NULL,
+	driver_daily_rate NUMERIC(10, 2) NOT NULL,
 	status VARCHAR(24) NOT NULL, 
 	image_url VARCHAR(255) NOT NULL, 
 	description TEXT NOT NULL, 
@@ -96,6 +109,7 @@ CREATE TABLE vehicles (
 	created_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT ck_vehicle_rate CHECK (daily_rate > 0), 
+	CONSTRAINT ck_vehicle_driver_rate CHECK (driver_daily_rate >= 0),
 	CONSTRAINT ck_vehicle_seats CHECK (seats > 0 AND seats <= 60), 
 	CONSTRAINT ck_vehicle_status CHECK (status IN ('Available', 'Rented', 'Under Maintenance')), 
 	FOREIGN KEY(category_id) REFERENCES vehicle_categories (id), 
@@ -118,6 +132,9 @@ CREATE TABLE bookings (
 	return_location VARCHAR(180) NOT NULL, 
 	days INTEGER NOT NULL, 
 	daily_rate NUMERIC(10, 2) NOT NULL, 
+	with_driver BOOL NOT NULL,
+	driver_daily_rate NUMERIC(10, 2) NOT NULL,
+	driver_amount NUMERIC(10, 2) NOT NULL,
 	rental_amount NUMERIC(10, 2) NOT NULL, 
 	service_fee NUMERIC(10, 2) NOT NULL, 
 	tax NUMERIC(10, 2) NOT NULL, 
@@ -130,6 +147,7 @@ CREATE TABLE bookings (
 	PRIMARY KEY (id), 
 	CONSTRAINT ck_booking_dates CHECK (return_at > pickup_at), 
 	CONSTRAINT ck_booking_amount CHECK (days > 0 AND total >= 0), 
+	CONSTRAINT ck_booking_driver_amount CHECK (driver_daily_rate >= 0 AND driver_amount >= 0),
 	CONSTRAINT ck_booking_status CHECK (status IN ('Pending', 'Confirmed', 'Active', 'Completed', 'Cancelled', 'Rejected')), 
 	FOREIGN KEY(user_id) REFERENCES users (id), 
 	FOREIGN KEY(vehicle_id) REFERENCES vehicles (id)

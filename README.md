@@ -66,7 +66,7 @@ The login screen also has one-click demo buttons.
 | Administrator | `admin@roam.test` | `Admin123!` |
 | Staff | `staff@roam.test` | `Staff123!` |
 
-The sample includes cars and bikes, a future reservation, completed trips and reviews, an overdue active rental, and a vehicle in maintenance. Dates are generated relative to the time the database is seeded.
+The sample includes cars and bikes, a future reservation, completed trips and reviews, an overdue active rental, and a vehicle in maintenance. Dates are generated relative to the time the database is seeded. Demo customers are pre-verified for the self-drive demo; newly registered customers must submit their licence for review. Cars also have sample driver add-on rates (bikes do not).
 
 For an **existing demo database**, the normal seed command leaves records alone. To add the new illustrative cars and bikes without resetting bookings or accounts, run:
 
@@ -109,7 +109,7 @@ Railway/Fly detect the `Dockerfile` automatically. On any host, keep `PORT` as p
 
 ### Free-tier and demo caveats
 
-- **Ephemeral disk:** the free plan recreates the container on deploys and restarts, and the SQLite demo database is regenerated and reseeded. Bookings made through the link are lost on redeploy. To persist data, attach a paid Render disk and set `DATABASE_URL=sqlite:////var/data/roam.db` plus `UPLOAD_DIR=/var/data/uploads` (see the commented block in `render.yaml`), or point `DATABASE_URL` at MySQL.
+- **Ephemeral disk:** the free plan recreates the container on deploys and restarts, and the SQLite demo database is regenerated and reseeded. Bookings and uploaded documents made through the link are lost on redeploy. To persist data, attach a paid Render disk and set `DATABASE_URL=sqlite:////var/data/roam.db`, `UPLOAD_DIR=/var/data/uploads`, and `KYC_UPLOAD_DIR=/var/data/kyc` (see the commented block in `render.yaml`), or point `DATABASE_URL` at MySQL.
 - **Cold starts:** a free instance sleeps after ~15 minutes idle; the first request takes roughly 30–60 seconds.
 - **It is a public demo:** anyone with the link can sign in as the demo administrator and change or delete records. Share it only as a demo, and see `create_admin.py` if you need a private instance.
 - **Not production-hardened:** payments are simulated, `APP_ENV` stays `development`, and the notes at the end of this file (WSGI server, HTTPS, backups, rate limiting, security review) still apply to a real deployment.
@@ -149,15 +149,24 @@ The schema import and concurrent booking smoke test were also exercised against 
 
 - **Public website:** search by location, category and dates; browse all cars or bikes, filter and sort the fleet; view details and date-specific availability; contact the team.
 - **Long trip mode:** choose the 7-, 14- or 30-day shortcut, or set custom dates up to 90 days. Search results are checked for availability across the whole period, and the selected dates carry through to vehicle details and booking. Date-only searches use 10:00 for pickup and return; the times can be changed on the vehicle page. Regular daily rates, service fee and GST apply; there is no automatic long-trip discount.
-- **Customer:** register or use the demo account, select dates and locations, review the server-calculated quote, reserve, choose a payment method, download a PDF receipt, manage bookings, edit a profile and review completed trips.
-- **Administrator:** use the dashboard to manage vehicles and image uploads, customers, bookings, payments, returns, maintenance, contact messages, and reports. Export a report as CSV.
-- **Staff:** manage bookings, returns and maintenance. Customer-account management, payments, financial reports and revenue metrics are restricted to administrators.
-- **Returns:** a staff member records the actual time, condition, notes and any additional charge. A late fee is added for each started 24-hour period after the scheduled return, at the booked daily rate. The vehicle is returned to the available fleet only after the return is completed. Additional charges create a separate pending payment.
+- **Customer:** register or use the demo account, upload a driving licence for KYC review, select self-drive or an eligible car with a driver, select dates and locations, review the server-calculated quote, reserve, choose a payment method, download a PDF receipt, manage bookings, edit a profile and review completed trips.
+- **Administrator:** use the dashboard to manage vehicles and image uploads, per-car driver availability/rates, customers and KYC reviews, bookings, payments, returns, maintenance, contact messages, and reports. Export a report as CSV.
+- **Staff:** manage bookings, returns and maintenance. Customer-account management, licence-document review, payments, financial reports and revenue metrics are restricted to administrators.
+- **Returns:** a staff member records the actual time, condition, notes and any additional charge. A late fee is added for each started 24-hour period after the scheduled return, at the booked vehicle rate plus the selected driver rate, if any. The vehicle is returned to the available fleet only after the return is completed. Additional charges create a separate pending payment.
 - **Maintenance:** scheduled service blocks overlapping reservations; in-progress service blocks bookings. Due scheduled work is activated when the API is accessed, and a vehicle is made available again only when service is completed and no other active work or rental blocks it.
+
+### Driving-licence KYC and chauffeur-driven rentals
+
+- New customers start at **Not submitted**. Under **Account → My profile → Driving licence & KYC**, they submit a licence number, future expiry date, and a JPG, PNG, WebP, or PDF document up to 5 MB. Image documents are validated and re-encoded; all documents use generated filenames in a private directory, not the public vehicle-image folder.
+- An administrator reviews the document under **Customers & KYC**, then approves it or rejects it with a customer-visible reason. Customers can resubmit after rejection. General profile edits cannot change a verified licence number. Document downloads require the owning customer or an administrator; staff cannot access them.
+- **Self-drive** reservations require Verified KYC, a licence number, and an expiry date that covers the entire rental through the return date. The server enforces this during booking, initial payment, administrator approval, and rental start—not only in the browser.
+- An eligible **car with a driver** does not require the customer’s KYC. Administrators set driver availability and a daily rate per vehicle. Bikes cannot offer the add-on. The booked driver rate and charge are stored as immutable snapshots on each booking.
+- Customers receive an in-app decision notification. A verified customer whose licence is within 30 days of expiry also receives a one-time in-app expiry reminder; resubmission resets the reminder cycle. Email/SMS reminders are not configured.
+- Demo accounts are pre-verified without private documents so the sample self-drive flow remains usable. Real deployments need a documented KYC retention/deletion policy, access auditing, encryption and legal/privacy review for identity documents.
 
 ### Demo policies and calculations
 
-- Prices are in INR. Rental duration is rounded up to a whole day. The server calculates the rental charge, a 5% service fee, and 5% demo GST on the rental charge plus service fee. These are illustrative, not tax advice.
+- Prices are in INR. Rental duration is rounded up to a whole day. The server calculates vehicle rental and optional driver charges, a 5% service fee on their subtotal, and 5% demo GST on that subtotal plus service fee. These are illustrative, not tax advice. Quotes, bookings, payment amounts and PDF receipts all use the same server-side calculation.
 - An unpaid, newly created reservation holds its dates for **15 minutes**. It is cancelled and released on the next API request after expiry. Cash selection or a successful payment confirms it; administrators may also approve a pending booking.
 - Customers can cancel pending or confirmed bookings at least 24 hours before pickup. Mock paid payments are marked refunded on cancellation. A Razorpay test payment or a paid cash payment requires administrator refund review; the system does not claim a real-world refund was completed automatically.
 - A vehicle currently marked rented or under maintenance cannot be booked, even for later dates, until the return/service workflow is completed. Future confirmed bookings and scheduled maintenance also block overlapping periods.
@@ -181,7 +190,7 @@ The Razorpay transport and verification paths are tested with mocked gateway res
 
 ### Password reset
 
-In the default demo, `SHOW_RESET_LINK=1` displays a one-use, one-hour reset link on the recovery page. This exposes account existence and must not be enabled on a public deployment. For email delivery, set `SHOW_RESET_LINK=0`, `PUBLIC_BASE_URL`, and the `SMTP_*` settings in `.env` (SMTP with STARTTLS). The API returns the same generic response for existing and nonexistent addresses. Booking and return notifications are in-app; SMS and transactional email notifications are not configured.
+In the default demo, `SHOW_RESET_LINK=1` displays a one-use, one-hour reset link on the recovery page. This exposes account existence and must not be enabled on a public deployment. For email delivery, set `SHOW_RESET_LINK=0`, `PUBLIC_BASE_URL`, and the `SMTP_*` settings in `.env` (SMTP with STARTTLS). The API returns the same generic response for existing and nonexistent addresses. Booking, return, KYC-review and licence-expiry notifications are in-app; SMS and transactional email notifications are not configured.
 
 ## Tests
 
@@ -195,7 +204,7 @@ TEST_MYSQL_URL='mysql+pymysql://user:password@127.0.0.1:3306/roam_test?charset=u
   python -m pytest tests/test_mysql_optional.py -q
 ```
 
-The backend suite covers CSRF and role/ownership checks, password hashing and reset, session revocation, server-side prices, overlapping and concurrent reservations, expiring holds, mock payment and PDF receipt, cancellation, returns and late fees, maintenance conflicts, reporting, image uploads, and mocked Razorpay signature/capture/refund handling.
+The backend suite covers CSRF and role/ownership checks, password hashing and reset, session revocation, server-side vehicle and driver prices, KYC upload/review/resubmission, private document permissions, licence-expiry reminders and booking restrictions, driver-inclusive late fees, overlapping and concurrent reservations, expiring holds, mock payment and PDF receipt, cancellation, returns, maintenance conflicts, reporting, image uploads, and mocked Razorpay signature/capture/refund handling.
 
 Browser tests require the API and Vite servers running with seeded demo data and mock payments:
 
@@ -205,7 +214,7 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-The browser suite creates and cancels a demo booking. Reset the demo database afterward if you want the original sample state. On Linux, Playwright may require additional system libraries; see Playwright's `install-deps` guidance.
+The browser suite creates bookings and a KYC submission. Reset the demo database afterward if you want the original sample state. On Linux, Playwright may require additional system libraries; see Playwright's `install-deps` guidance.
 
 ## Configuration and deployment notes
 
@@ -217,4 +226,4 @@ python -m backend.create_admin
 
 For an experimental single-server build, run `npm run build` in `frontend/` and then start Flask; it will serve the built SPA. Behind a TLS-terminating proxy the app trusts `X-Forwarded-Proto`/`X-Forwarded-Host` (`TRUST_PROXY=0` disables this); over HTTPS it marks the session cookie `Secure` and, outside production, `SameSite=None` so an embedded preview iframe keeps its login. `FRAME_ANCESTORS` sets the CSP `frame-ancestors` allow-list for the served pages: unset it means `*` in development and `'self'` in production. Use a production WSGI server and HTTPS rather than Flask's development server. `APP_ENV=production` adds sanity checks requiring a long random `SECRET_KEY`, secure cookies, `SHOW_RESET_LINK=0`, `SEED_DEMO=0`, and a non-mock payment mode. Generate a secret with `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
 
-Passwords use Werkzeug's scrypt hashing. Session cookies are signed, HttpOnly and SameSite=Lax; random session tokens are stored only as hashes and can be revoked on logout or password reset. State-changing API calls require a CSRF token. User ownership and role checks are enforced on the server, input validation is server-side, SQL uses parameterized ORM queries, and uploaded images are type-checked and re-encoded. The simple login/reset rate limiter is process-local; a production deployment needs a shared rate limiter, HTTPS, hardened infrastructure, backups, monitoring, migrations, tested email, retention policies, and a full security review. The default demo secret, sample users and demo reset links are not safe for production.
+Passwords use Werkzeug's scrypt hashing. Session cookies are signed, HttpOnly and SameSite=Lax; random session tokens are stored only as hashes and can be revoked on logout or password reset. State-changing API calls require a CSRF token. User ownership and role checks are enforced on the server, input validation is server-side, SQL uses parameterized ORM queries, and uploaded images are type-checked and re-encoded. KYC documents use private generated paths and authorized download routes; configure `KYC_UPLOAD_DIR` separately from public vehicle uploads when persistent storage is used. The simple login/reset rate limiter is process-local; a production deployment needs a shared rate limiter, HTTPS, hardened infrastructure, backups, monitoring, migrations, tested email, retention policies, and a full security review. The default demo secret, sample users and demo reset links are not safe for production.
