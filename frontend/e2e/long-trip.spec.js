@@ -39,7 +39,7 @@ test('long trip mode carries bike dates through search, login and booking', asyn
   await page.getByRole('button', { name: 'Customer demo' }).click();
   await expect(page).toHaveURL(/\/book\/\d+\?.*trip=long/);
   await expect(page.getByText('Long trip mode', { exact: true })).toBeVisible();
-  await expect(page.getByText('Rental (30 days)')).toBeVisible();
+  await expect(page.getByText('Vehicle rental (30 days)')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Continue to payment' })).toBeEnabled();
   await page.getByRole('button', { name: 'Continue to payment' }).click();
   await expect(page.getByText('Demo payments only')).toBeVisible();

@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from sqlalchemy import (
-    Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, Numeric,
+    Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, Numeric,
     String, Text, UniqueConstraint
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -37,6 +37,18 @@ class Customer(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
     phone: Mapped[str] = mapped_column(String(24), default="", nullable=False)
     license_number: Mapped[str] = mapped_column(String(50), default="", nullable=False)
+    license_expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
+    kyc_status: Mapped[str] = mapped_column(String(20), default="Not submitted", nullable=False, index=True)
+    # Private, generated filename; documents are never served from the public uploads folder.
+    license_document: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    kyc_rejection_reason: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    kyc_submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    kyc_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    kyc_reviewed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    kyc_reminder_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    __table_args__ = (
+        CheckConstraint("kyc_status IN ('Not submitted', 'Pending', 'Verified', 'Rejected')", name="ck_customer_kyc_status"),
+    )
 
 
 class VehicleCategory(Base):
@@ -67,6 +79,8 @@ class Vehicle(Base):
     transmission: Mapped[str] = mapped_column(String(24), nullable=False)
     seats: Mapped[int] = mapped_column(Integer, nullable=False)
     daily_rate: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    driver_available: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    driver_daily_rate: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0, nullable=False)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="Available", index=True)
     image_url: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
@@ -75,6 +89,7 @@ class Vehicle(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     __table_args__ = (
         CheckConstraint("daily_rate > 0", name="ck_vehicle_rate"),
+        CheckConstraint("driver_daily_rate >= 0", name="ck_vehicle_driver_rate"),
         CheckConstraint("seats > 0 AND seats <= 60", name="ck_vehicle_seats"),
         CheckConstraint("status IN ('Available', 'Rented', 'Under Maintenance')", name="ck_vehicle_status"),
     )
@@ -91,6 +106,10 @@ class Booking(Base):
     return_location: Mapped[str] = mapped_column(String(180), nullable=False)
     days: Mapped[int] = mapped_column(Integer, nullable=False)
     daily_rate: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    with_driver: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Driver rate and amount are snapshots so later fleet-price edits cannot alter old bookings.
+    driver_daily_rate: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0, nullable=False)
+    driver_amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0, nullable=False)
     rental_amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     service_fee: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     tax: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
@@ -103,6 +122,7 @@ class Booking(Base):
     __table_args__ = (
         CheckConstraint("return_at > pickup_at", name="ck_booking_dates"),
         CheckConstraint("days > 0 AND total >= 0", name="ck_booking_amount"),
+        CheckConstraint("driver_daily_rate >= 0 AND driver_amount >= 0", name="ck_booking_driver_amount"),
         CheckConstraint("status IN ('Pending', 'Confirmed', 'Active', 'Completed', 'Cancelled', 'Rejected')", name="ck_booking_status"),
         Index("ix_booking_vehicle_period", "vehicle_id", "pickup_at", "return_at", "status"),
     )

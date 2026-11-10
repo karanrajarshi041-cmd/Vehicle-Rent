@@ -7,19 +7,20 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 from PIL import Image
-from sqlalchemy import select
+from sqlalchemy import func, select
 from werkzeug.security import check_password_hash
 
 from backend.app import create_app
 from backend.db import local_now
-from backend.models import Booking, Maintenance, Payment, User
+from backend.models import Booking, Customer, Maintenance, Notification, Payment, User, Vehicle
 
 
 @pytest.fixture
 def app(tmp_path):
     app=create_app({'TESTING':True, 'SECRET_KEY':'test-secret-not-for-production',
                     'DATABASE_URL':'sqlite:///'+str(tmp_path/'test.db'),
-                    'PAYMENT_MODE':'mock','SHOW_RESET_LINK':True,'SEED_DEMO':True,'UPLOAD_DIR':str(tmp_path/'uploads')})
+                    'PAYMENT_MODE':'mock','SHOW_RESET_LINK':True,'SEED_DEMO':True,
+                    'UPLOAD_DIR':str(tmp_path/'uploads'),'KYC_UPLOAD_DIR':str(tmp_path/'kyc')})
     yield app
     app.extensions['roam_engine'].dispose()
 
@@ -318,3 +319,141 @@ def test_opt_in_demo_fleet_update_is_non_destructive_and_idempotent(app):
         assert add_sample_vehicles(db) == 0
         db.commit()
         assert vehicle.is_deleted and vehicle.model == 'Customized by admin'
+
+
+def register_customer(client, email='new-traveler@example.com'):
+    response = client.request('POST', '/api/auth/register', {
+        'name': 'New Traveler', 'email': email, 'password': 'Secure123!', 'phone': '9876543210',
+    })
+    assert response.status_code == 201, response.get_json()
+    return response.get_json()['user']
+
+
+def upload_license(client, expiry=None, number='WB0120260012345'):
+    expiry = expiry or (local_now() + timedelta(days=500)).date().isoformat()
+    document = io.BytesIO()
+    Image.new('RGB', (24, 16), 'navy').save(document, format='PNG')
+    document.seek(0)
+    return client.c.post('/api/kyc', data={
+        'license_number': number, 'license_expiry': expiry,
+        'document': (document, 'licence.png'),
+    }, headers={'X-CSRF-Token': client.csrf}, content_type='multipart/form-data')
+
+
+def test_driver_addon_server_pricing_and_kyc_bypass(app):
+    verified = Client(app)
+    verified.login()
+    form = {**trip(vehicle=4), 'with_driver': True}
+    quote_response = verified.request('POST', '/api/quote', form)
+    assert quote_response.status_code == 200
+    quote = quote_response.get_json()
+    vehicle = verified.c.get('/api/vehicles/4').get_json()
+    assert vehicle['driver_available'] and vehicle['driver_daily_rate'] == 800
+    assert quote['with_driver'] and not quote['requires_kyc']
+    assert quote['rental_amount'] == vehicle['daily_rate'] * 2
+    assert quote['driver_amount'] == vehicle['driver_daily_rate'] * 2
+    subtotal = quote['rental_amount'] + quote['driver_amount']
+    assert quote['service_fee'] == pytest.approx(round(subtotal * .05, 2))
+    assert quote['total'] > quote['rental_amount']
+
+    unverified = Client(app)
+    user = register_customer(unverified)
+    assert user['kyc_status'] == 'Not submitted'
+    blocked = unverified.request('POST', '/api/bookings', trip(vehicle=10))
+    assert blocked.status_code == 403 and 'verified' in blocked.get_json()['error'].lower()
+    # A chauffeur-driven booking needs no customer licence. Client prices are ignored.
+    booked = create(unverified, {**form, 'driver_daily_rate': 1, 'driver_amount': 1, 'total': 1})
+    assert booked['with_driver'] and booked['driver_daily_rate'] == 800
+    assert booked['driver_amount'] == 1600 and booked['total'] == quote['total']
+    paid = unverified.request('POST', f"/api/bookings/{booked['id']}/payment", {'method': 'UPI'})
+    assert paid.status_code == 200
+    assert paid.get_json()['booking']['payments'][0]['status'] == 'Paid'
+    bike = next(v for v in unverified.c.get('/api/vehicles?category=bike').get_json() if v['status'] == 'Available')
+    assert unverified.request('POST', '/api/quote', {**trip(vehicle=bike['id']), 'with_driver': True}).status_code == 400
+
+
+def test_kyc_upload_review_resubmit_permissions_and_expiry_reminder(app):
+    customer = Client(app)
+    user = register_customer(customer, 'kyc@example.com')
+    expired_upload = upload_license(customer, (local_now() - timedelta(days=1)).date().isoformat())
+    assert expired_upload.status_code == 400
+    submitted = upload_license(customer)
+    assert submitted.status_code == 201, submitted.get_json()
+    assert submitted.get_json()['user']['kyc_status'] == 'Pending'
+    assert customer.c.get('/api/kyc/document').status_code == 200
+    assert customer.request('POST', '/api/bookings', trip(vehicle=10)).status_code == 403
+
+    admin = Client(app)
+    admin.login('admin@roam.test', 'Admin123!')
+    record = next(item for item in admin.c.get('/api/admin/customers').get_json() if item['id'] == user['id'])
+    assert record['kyc_status'] == 'Pending' and record['has_license_document']
+    document_url = f"/api/admin/customers/{user['id']}/kyc/document"
+    assert admin.c.get(document_url).status_code == 200
+    staff = Client(app)
+    staff.login('staff@roam.test', 'Staff123!')
+    assert staff.c.get(document_url).status_code == 403
+    review_url = f"/api/admin/customers/{user['id']}/kyc"
+    assert admin.request('POST', review_url, {'status': 'Rejected', 'reason': ''}).status_code == 400
+    rejected = admin.request('POST', review_url, {'status': 'Rejected', 'reason': 'The document is blurry'})
+    assert rejected.status_code == 200
+    refreshed = customer.c.get('/api/session').get_json()['user']
+    assert refreshed['kyc_status'] == 'Rejected'
+    assert refreshed['kyc_rejection_reason'] == 'The document is blurry'
+
+    assert upload_license(customer, number='WB0120260099999').status_code == 201
+    approved = admin.request('POST', review_url, {'status': 'Verified'})
+    assert approved.status_code == 200, approved.get_json()
+    assert approved.get_json()['user']['kyc_status'] == 'Verified'
+    # General profile edits cannot silently change a verified licence number.
+    profile = customer.request('PUT', '/api/profile', {
+        'name': 'New Traveler', 'phone': '9876543210', 'license_number': 'BYPASS123',
+    })
+    assert profile.status_code == 200
+    assert profile.get_json()['user']['license_number'] == 'WB0120260099999'
+    assert create(customer, trip(vehicle=10))['with_driver'] is False
+
+    with app.extensions['roam_session']() as db:
+        record = db.scalar(select(Customer).where(Customer.user_id == user['id']))
+        record.license_expiry = (local_now() + timedelta(days=10)).date()
+        record.kyc_reminder_sent_at = None
+        db.commit()
+    assert customer.c.get('/api/session').get_json()['user']['kyc_status'] == 'Verified'
+    with app.extensions['roam_session']() as db:
+        reminders = list(db.scalars(select(Notification).where(
+            Notification.user_id == user['id'], Notification.title == 'Your driving licence expires soon')))
+        assert len(reminders) == 1
+    customer.c.get('/api/session')
+    with app.extensions['roam_session']() as db:
+        assert db.scalar(select(func.count(Notification.id)).where(
+            Notification.user_id == user['id'], Notification.title == 'Your driving licence expires soon')) == 1
+    # The licence must cover the whole self-drive period, but a driver remains available.
+    assert customer.request('POST', '/api/bookings', trip(vehicle=8)).status_code == 403
+    assert customer.request('POST', '/api/bookings', {**trip(vehicle=4), 'with_driver': True}).status_code == 201
+    with app.extensions['roam_session']() as db:
+        record = db.scalar(select(Customer).where(Customer.user_id == user['id']))
+        record.license_expiry = (local_now() - timedelta(days=1)).date()
+        db.commit()
+    assert customer.c.get('/api/session').get_json()['user']['kyc_status'] == 'Expired'
+
+
+def test_driver_rate_is_included_in_late_return_fee(app):
+    customer = Client(app)
+    customer.login()
+    booking = create(customer, {**trip(vehicle=4), 'with_driver': True})
+    now = local_now()
+    with app.extensions['roam_session']() as db:
+        record = db.get(Booking, booking['id'])
+        record.status = 'Active'
+        record.pickup_at = now - timedelta(days=5)
+        record.return_at = now - timedelta(days=2)
+        record.hold_expires_at = None
+        db.get(Vehicle, record.vehicle_id).status = 'Rented'
+        db.commit()
+    staff = Client(app)
+    staff.login('staff@roam.test', 'Staff123!')
+    returned = staff.request('POST', f"/api/admin/returns/{booking['id']}", {
+        'actual_return_at': now.isoformat(), 'condition': 'Good', 'additional_charges': 0, 'notes': '',
+    })
+    assert returned.status_code == 200, returned.get_json()
+    expected = (booking['daily_rate'] + booking['driver_daily_rate']) * 2
+    assert returned.get_json()['late_fee'] == pytest.approx(expected)

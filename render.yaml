@@ -36,3 +36,5 @@ services:
     #     value: sqlite:////var/data/roam.db
     #   - key: UPLOAD_DIR
     #     value: /var/data/uploads
+    #   - key: KYC_UPLOAD_DIR
+    #     value: /var/data/kyc
